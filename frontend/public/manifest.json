@@ -1,0 +1,18 @@
+{
+  "short_name": "FeeloWall",
+  "name": "FeeloWall Premium HD Wallpapers",
+  "description": "Premium HD Wallpapers community-curated for your desktop and mobile devices.",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f0f12",
+  "theme_color": "#eb5e28",
+  "display": "standalone",
+  "orientation": "portrait"
+}
