@@ -66,12 +66,10 @@ export const ReportDialog = ({ targetType, targetId, label, onClose, showToast }
 };
 
 /** Report and mute, for anyone signed in looking at someone else's work. */
-export const SafetyActions = ({ targetType, targetId, label, username, showToast }) => {
+/** Returns a function that mutes a creator after confirming (sign-in required). */
+export const useMuteCreator = (showToast) => {
   const { user, openAuth } = useAuth();
-  const [reporting, setReporting] = useState(false);
-
-  const openReport = () => (user ? setReporting(true) : openAuth('login'));
-  const mute = async () => {
+  return async (username) => {
     if (!user) {
       openAuth('login');
       return;
@@ -84,6 +82,15 @@ export const SafetyActions = ({ targetType, targetId, label, username, showToast
       showToast(errorMessage(err), 'error');
     }
   };
+};
+
+export const SafetyActions = ({ targetType, targetId, label, username, showToast }) => {
+  const { user, openAuth } = useAuth();
+  const [reporting, setReporting] = useState(false);
+  const muteCreator = useMuteCreator(showToast);
+
+  const openReport = () => (user ? setReporting(true) : openAuth('login'));
+  const mute = () => muteCreator(username);
 
   return (
     <>
@@ -98,13 +105,9 @@ export const SafetyActions = ({ targetType, targetId, label, username, showToast
 
 const TIP_OPTIONS = [300, 500, 1000, 2000];
 
-export const TipButton = ({ username, showToast, label = 'Send a Tip' }) => {
-  const { user, openAuth } = useAuth();
-  const [open, setOpen] = useState(false);
+export const TipDialog = ({ username, showToast, onClose }) => {
   const [dollars, setDollars] = useState('5');
   const [busy, setBusy] = useState(false);
-
-  const start = () => (user ? setOpen(true) : openAuth('login'));
 
   const submit = async (event) => {
     event.preventDefault();
@@ -119,10 +122,7 @@ export const TipButton = ({ username, showToast, label = 'Send a Tip' }) => {
   };
 
   return (
-    <>
-      <button type="button" className="btn btn-outline fw-tip" onClick={start}><Coffee size={15} aria-hidden="true" /> {label}</button>
-      {open && (
-        <Dialog title={`Tip ${username}`} onClose={() => setOpen(false)}>
+    <Dialog title={`Tip ${username}`} onClose={onClose}>
           <form onSubmit={submit} className="fw-form">
             <div className="fw-chips">
               {TIP_OPTIONS.map((cents) => (
@@ -137,8 +137,19 @@ export const TipButton = ({ username, showToast, label = 'Send a Tip' }) => {
             <p className="fw-field-hint">You'll pay securely on Stripe's checkout page.</p>
             <button type="submit" className="btn btn-primary" disabled={busy}>Continue to Payment</button>
           </form>
-        </Dialog>
-      )}
+    </Dialog>
+  );
+};
+
+export const TipButton = ({ username, showToast, label = 'Send a Tip' }) => {
+  const { user, openAuth } = useAuth();
+  const [open, setOpen] = useState(false);
+  const start = () => (user ? setOpen(true) : openAuth('login'));
+
+  return (
+    <>
+      <button type="button" className="btn btn-outline fw-tip" onClick={start}><Coffee size={15} aria-hidden="true" /> {label}</button>
+      {open && <TipDialog username={username} showToast={showToast} onClose={() => setOpen(false)} />}
     </>
   );
 };
@@ -173,8 +184,7 @@ export const LicenseInfo = ({ wallpaper }) => (
 );
 
 /** Copy-paste embed code, for a wallpaper or a collection. */
-export const EmbedButton = ({ path, title, showToast }) => {
-  const [open, setOpen] = useState(false);
+export const EmbedDialog = ({ path, title, showToast, onClose }) => {
   const code = `<iframe src="${API_BASE}/embed/${path}" title="${String(title).replace(/"/g, '&quot;')}" width="640" height="400" style="border:0" loading="lazy"></iframe>`;
 
   const copy = () => navigator.clipboard.writeText(code).then(
@@ -183,19 +193,30 @@ export const EmbedButton = ({ path, title, showToast }) => {
   );
 
   return (
+    <Dialog title="Embed on Your Site" onClose={onClose}>
+      <pre className="fw-code fw-code-wrap">{code}</pre>
+      <button type="button" className="btn btn-primary" onClick={copy}>Copy Code</button>
+    </Dialog>
+  );
+};
+
+export const EmbedButton = ({ path, title, showToast }) => {
+  const [open, setOpen] = useState(false);
+  return (
     <>
       <button type="button" className="btn btn-outline" onClick={() => setOpen(true)}><Code2 size={15} aria-hidden="true" /> <span>Embed</span></button>
-      {open && (
-        <Dialog title="Embed on Your Site" onClose={() => setOpen(false)}>
-          <pre className="fw-code fw-code-wrap">{code}</pre>
-          <button type="button" className="btn btn-primary" onClick={copy}>Copy Code</button>
-        </Dialog>
-      )}
+      {open && <EmbedDialog path={path} title={title} showToast={showToast} onClose={() => setOpen(false)} />}
     </>
   );
 };
 
 const slug = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'wallpaper';
+
+/** Save the palette as a theme file in the given export format. */
+export const exportPaletteTheme = (format, colors, title, showToast) => {
+  saveText(format.build(colors, title), `${slug(title)}-${format.id}.${format.extension}`);
+  showToast(`${format.label} downloaded.`, 'success');
+};
 
 /** Export the palette as a theme file, plus a link to the multi-monitor tool. */
 export const ImageTools = ({ wallpaper, palette, showToast }) => {
@@ -203,10 +224,7 @@ export const ImageTools = ({ wallpaper, palette, showToast }) => {
   const colors = palette?.length ? palette : (wallpaper.colors || []);
   const id = wallpaper._id || wallpaper.id;
 
-  const exportTheme = (format) => {
-    saveText(format.build(colors, wallpaper.title), `${slug(wallpaper.title)}-${format.id}.${format.extension}`);
-    showToast(`${format.label} downloaded.`, 'success');
-  };
+  const exportTheme = (format) => exportPaletteTheme(format, colors, wallpaper.title, showToast);
 
   return (
     <div className="fw-tools">

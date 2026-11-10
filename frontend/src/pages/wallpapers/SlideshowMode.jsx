@@ -168,6 +168,7 @@ export const SlideshowMode = ({ wallpapers = [], onClose }) => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 15 }}
             transition={{ duration: 0.25 }}
+            className="fw-slideshow-hud"
             style={{
               position: 'absolute',
               bottom: '30px',
@@ -219,10 +220,10 @@ export const SlideshowMode = ({ wallpapers = [], onClose }) => {
             </div>
 
             {/* Bottom Panel: Controls grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: '2rem' }}>
+            <div className="fw-slideshow-controls" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: '2rem' }}>
               
               {/* Left Settings: Rotation Time & Particle overlays */}
-              <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+              <div className="fw-slideshow-group" style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
                 {/* Interval Slider */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <Clock size={16} style={{ color: 'rgba(255,255,255,0.6)' }} />
@@ -304,7 +305,7 @@ export const SlideshowMode = ({ wallpapers = [], onClose }) => {
               </div>
 
               {/* Right Music Settings */}
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'flex-end' }}>
+              <div className="fw-slideshow-group" style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'flex-end' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Music size={15} style={{ color: 'rgba(255,255,255,0.6)' }} />
                   <select

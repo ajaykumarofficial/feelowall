@@ -347,7 +347,7 @@ export const ShaderArtCreator = ({ showToast }) => {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', height: 'calc(100vh - 65px)', background: 'var(--bg-main)', overflow: 'hidden' }}>
+    <div className="fw-shader-layout" style={{ display: 'grid', gridTemplateColumns: '1fr 380px', height: 'calc(100vh - 65px)', background: 'var(--bg-main)', overflow: 'hidden' }}>
       
       {/* Visual Canvas Area */}
       <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#09090b' }}>
@@ -390,7 +390,7 @@ export const ShaderArtCreator = ({ showToast }) => {
       </div>
 
       {/* Editor Controls Sidebar */}
-      <div style={{ background: 'var(--bg-dropdown)', borderLeft: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', padding: '2rem', gap: '2rem' }}>
+      <div className="fw-shader-panel" style={{ background: 'var(--bg-dropdown)', borderLeft: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', padding: '2rem', gap: '2rem' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
             <Sparkles size={20} style={{ color: 'var(--accent)' }} />

@@ -197,7 +197,7 @@ export const AuthModal = ({ showToast }) => {
           transition={{ duration: 0.2 }}
         >
           <motion.div
-            className="modal-card"
+            className="modal-card auth-modal-card"
             role="dialog"
             aria-modal="true"
             aria-label={activeTab === 'login' ? t('auth.login') : t('auth.signUp')}

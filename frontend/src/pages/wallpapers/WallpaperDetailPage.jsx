@@ -13,7 +13,9 @@ import { pickBestVariant } from '../../utils/variants';
 import { API_BASE, mediaUrl } from '../../services/platformService';
 import { VerifiedBadge, activatable } from '../../components/ui';
 import CommentsSection from './CommentsSection';
-import { EmbedButton, ImageTools, LicenseInfo, SafetyActions, TagList, TipButton } from './WallpaperExtras';
+import { EmbedDialog, LicenseInfo, ReportDialog, TagList, TipDialog, exportPaletteTheme, useMuteCreator } from './WallpaperExtras';
+import ActionMenu from '../../components/ActionMenu';
+import { EXPORT_FORMATS } from '../../utils/paletteExport';
 import {
   ArrowLeft,
   User,
@@ -36,7 +38,16 @@ import {
   Share2,
   Coffee,
   DollarSign,
-  X
+  X,
+  Code2,
+  Flag,
+  VolumeX,
+  Palette,
+  Layers,
+  Play,
+  Pause,
+  Plus,
+  ChevronDown
 } from 'lucide-react';
 
 const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -57,7 +68,8 @@ const pageTransition = {
 export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColorChange }) => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, openAuth } = useAuth();
+  const muteCreator = useMuteCreator(showToast);
 
   const [wallpaper, setWallpaper] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -82,6 +94,12 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
   const [selectedDevice, setSelectedDevice] = useState('monitor');
   const [glowIntensity, setGlowIntensity] = useState(60);
   const [isMockupOpen, setIsMockupOpen] = useState(false);
+
+  // Dialogs opened from the "more" menu, and the collapsible adjustments panel
+  const [showEmbed, setShowEmbed] = useState(false);
+  const [showTip, setShowTip] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [showAdjustments, setShowAdjustments] = useState(false);
 
   // Similar Wallpapers States
   const [similarWallpapers, setSimilarWallpapers] = useState([]);
@@ -324,6 +342,43 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
     );
   };
 
+  // Fit the closest variant to this screen's exact size, then download it.
+  const handleDeviceDownload = () => {
+    if (!wallpaper) return;
+    const W = window.screen.width;
+    const H = window.screen.height;
+    const theme = document.documentElement.getAttribute('data-theme');
+    const best = pickBestVariant(wallpaper, W, H, theme);
+    cropAndDownload(
+      mediaUrl(best.imageUrl),
+      `${wallpaper.title.toLowerCase().replace(/\s+/g, '-')}-device-${W}x${H}`,
+      W / H,
+      isAdjusted ? adjustments : null,
+      () => {
+        showToast('Optimizing wallpaper for your device screen...', 'info');
+        wallpaperService.incrementDownloadCount(wallpaper._id || wallpaper.id).catch(() => {});
+      },
+      () => showToast('Device optimized image downloaded!', 'success'),
+      (err) => showToast(`Download failed: ${err}`, 'error'),
+      null
+    );
+  };
+
+  const handleLike = async () => {
+    if (!onLike || !wallpaper) return;
+    const wasLiked = Boolean(user && wallpaper.likes && wallpaper.likes.includes(user.id));
+    const res = await onLike(wallpaper._id || wallpaper.id, user);
+    if (res) {
+      setWallpaper(prev => prev ? {
+        ...prev,
+        likes: res.likes || (wasLiked ? (prev.likes || []).filter(l => l !== user.id) : [...(prev.likes || []), user.id]),
+        likesCount: res.likesCount
+      } : null);
+    }
+  };
+
+  const requireUser = (action) => () => (user ? action() : openAuth('login'));
+
   if (loading) {
     return (
       <div className="gallery-container" style={{ padding: '120px 2rem 40px 2rem', textAlign: 'center' }}>
@@ -352,11 +407,12 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
   const isFollowingCreator = followingList.some(item => item.username.toLowerCase() === wallpaper.uploadedBy.toLowerCase());
   const isAdmin = user?.role === 'admin';
   const status = wallpaper.status || 'published';
+  const paletteColors = palette?.length ? palette : (wallpaper.colors || []);
   const isPublished = status === 'published';
 
   return (
     <motion.div
-      className="gallery-container"
+      className="gallery-container fw-detail-page"
       style={{ padding: '100px 1.5rem 60px 1.5rem', maxWidth: '1400px', margin: '0 auto' }}
       initial={false}
       animate="in"
@@ -364,29 +420,16 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
       variants={pageVariants}
       transition={pageTransition}
     >
-      {/* Top Breadcrumb & Share Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <button
-          type="button"
-          className="btn btn-outline"
-          onClick={() => navigate(-1)}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', height: '38px', padding: '0 1rem' }}
-        >
-          <ArrowLeft size={16} />
-          <span>Back</span>
+      {/* Top bar: back + breadcrumb */}
+      <div className="fw-detail-topbar">
+        <button type="button" className="fw-icon-btn" onClick={() => navigate(-1)} aria-label="Go back" title="Go back">
+          <ArrowLeft size={18} aria-hidden="true" />
         </button>
-
-        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
-          <button
-            className="btn btn-outline"
-            onClick={handleShare}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', height: '38px', padding: '0 1rem' }}
-          >
-            <Share2 size={16} />
-            <span>Share</span>
-          </button>
-          {isPublished && <EmbedButton path={`wallpaper/${id}`} title={wallpaper.title} showToast={showToast} />}
-        </div>
+        <nav className="fw-detail-crumb" aria-label="Breadcrumb">
+          <button type="button" className="fw-link fw-muted" onClick={() => navigate('/')}>Explore</button>
+          <span aria-hidden="true">/</span>
+          <span>{wallpaper.category}</span>
+        </nav>
       </div>
 
       {!isPublished && (
@@ -455,29 +498,15 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
 
             {wallpaper.isLive && (
               <button
+                type="button"
+                className="fw-image-chip"
                 onClick={() => setIsPlayLive(!isPlayLive)}
-                style={{
-                  position: 'absolute',
-                  bottom: '20px',
-                  right: '20px',
-                  background: 'rgba(15, 23, 42, 0.85)',
-                  color: '#fff',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '50px',
-                  padding: '0.5rem 1rem',
-                  fontSize: '0.8rem',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  zIndex: 10,
-                  boxShadow: 'var(--shadow-md)',
-                  backdropFilter: 'blur(5px)'
-                }}
+                aria-label={isPlayLive ? 'Pause live loop' : 'Play live loop'}
+                title={isPlayLive ? 'Pause live loop' : 'Play live loop'}
+                aria-pressed={isPlayLive}
               >
-                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: isPlayLive ? '#10b981' : '#ef4444' }} />
-                <span>{isPlayLive ? 'Live Loop Active' : 'Play Live Loop'}</span>
+                <span className={`fw-live-dot ${isPlayLive ? 'on' : ''}`} aria-hidden="true" />
+                {isPlayLive ? <Pause size={15} aria-hidden="true" /> : <Play size={15} aria-hidden="true" />}
               </button>
             )}
 
@@ -490,42 +519,66 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
               />
             )}
           </div>
-          {/* Color Swatches */}
+          {/* Color Palette: header row, swatches on the next line */}
           {(palette.length > 0 || paletteLoading) && (
-            <div className="color-palette" style={{ position: 'relative', left: 'auto', bottom: 'auto', right: 'auto', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.8rem', background: 'var(--bg-dropdown)', padding: '1.2rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-              <span className="color-palette-label" style={{ fontWeight: 600, color: 'var(--text-muted)' }}>Color Palette</span>
-              {paletteLoading
-                ? Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="color-swatch swatch-skeleton" />
-                ))
-                : palette.map((hex) => (
-                  <button
-                    key={hex}
-                    className="color-swatch"
-                    style={{ background: hex }}
-                    title={`Color ${hex}`}
-                    onClick={() => copyHex(hex)}
-                  >
-                    <span className="swatch-tooltip" onClick={(e) => e.stopPropagation()}>
-                      <span onClick={() => copyHex(hex)} title="Copy Hex" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer' }}>
-                        <Copy size={10} /> {hex}
-                      </span>
-                      <span style={{ margin: '0 0.2rem', opacity: 0.5 }}>|</span>
-                      <span onClick={() => handleColorSearch(hex)} title="Search Color" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem', color: 'var(--accent)', cursor: 'pointer' }}>
-                        <Search size={10} /> Search
-                      </span>
-                    </span>
-                  </button>
-                ))}
-            </div>
+            <section className="fw-palette" aria-label="Color palette">
+              <div className="fw-palette-header">
+                <Palette size={16} aria-hidden="true" />
+                <h2 className="fw-palette-title">Color Palette</h2>
+                <span className="fw-palette-hint">Tap a color to copy</span>
+              </div>
+
+              <ul className="fw-palette-list">
+                {paletteLoading
+                  ? Array.from({ length: 6 }).map((_, i) => (
+                    <li key={i} className="fw-swatch fw-swatch-loading" aria-hidden="true">
+                      <span className="fw-swatch-color swatch-skeleton" />
+                      <span className="fw-swatch-hex-skeleton" />
+                    </li>
+                  ))
+                  : palette.map((hex) => (
+                    <li key={hex} className="fw-swatch">
+                      <button
+                        type="button"
+                        className="fw-swatch-copy"
+                        onClick={() => copyHex(hex)}
+                        title={`Copy ${hex}`}
+                        aria-label={`Copy color ${hex}`}
+                      >
+                        <span className="fw-swatch-color" style={{ background: hex }} aria-hidden="true" />
+                        <span className="fw-swatch-hex">{hex.toUpperCase()}</span>
+                        <Copy size={13} className="fw-swatch-copy-icon" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="fw-swatch-search"
+                        onClick={() => handleColorSearch(hex)}
+                        title={`Find wallpapers with ${hex}`}
+                        aria-label={`Find wallpapers with color ${hex}`}
+                      >
+                        <Search size={14} aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            </section>
           )}
-         
 
           {/* Live Adjustments & Effects Section */}
           <div className="lightbox-section" style={{ background: 'var(--bg-dropdown)', padding: '1.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-            <div className="lightbox-section-header" style={{ marginBottom: '1rem' }}>
-              <Sliders size={16} />
-              <span style={{ fontWeight: 700 }}>Live Image Adjustments</span>
+            <div className="lightbox-section-header" style={{ marginBottom: showAdjustments ? '1rem' : 0 }}>
+              <button
+                type="button"
+                className="fw-collapse-toggle"
+                onClick={() => setShowAdjustments((v) => !v)}
+                aria-expanded={showAdjustments}
+                aria-controls="fw-adjustments-body"
+              >
+                <Sliders size={16} aria-hidden="true" />
+                <span>Adjust &amp; Effects</span>
+                {(isAdjusted || ambientEffect !== 'none') && <span className="fw-dot-badge" title="Changes applied" />}
+                <ChevronDown size={16} className={`fw-chevron ${showAdjustments ? 'open' : ''}`} aria-hidden="true" />
+              </button>
               {isAdjusted && (
                 <button
                   className="btn-reset-adj"
@@ -538,6 +591,8 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
               )}
             </div>
 
+            {showAdjustments && (
+            <div id="fw-adjustments-body">
             <div className="slider-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.2rem' }}>
               {[
                 { key: 'blur', label: 'Blur', min: 0, max: 20, step: 0.5, unit: 'px' },
@@ -578,6 +633,8 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                 <option value="parallax">✨ Mouse Parallax</option>
               </select>
             </div>
+            </div>
+            )}
           </div>
         </div>
 
@@ -624,22 +681,17 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
 
               {!isOwner && user && (
                 <button
-                  className="btn btn-outline"
+                  type="button"
+                  className={`fw-pill-btn ${isFollowingCreator ? 'active' : ''}`}
                   onClick={() => handleToggleFollow(wallpaper.uploadedBy)}
-                  style={{ height: '32px', padding: '0 0.8rem', fontSize: '0.78rem', borderRadius: '6px' }}
+                  aria-pressed={isFollowingCreator}
+                  title={isFollowingCreator ? `Unfollow ${wallpaper.uploadedBy}` : `Follow ${wallpaper.uploadedBy}`}
                 >
-                  {isFollowingCreator ? (
-                    <><UserCheck size={13} style={{ marginRight: '0.3rem' }} /> Following</>
-                  ) : (
-                    <><UserPlus size={13} style={{ marginRight: '0.3rem' }} /> Follow</>
-                  )}
+                  {isFollowingCreator ? <UserCheck size={14} aria-hidden="true" /> : <UserPlus size={14} aria-hidden="true" />}
+                  <span>{isFollowingCreator ? 'Following' : 'Follow'}</span>
                 </button>
               )}
             </div>
-
-            {creatorProfile?.acceptsTips && !isOwner && (
-              <div className="fw-spaced"><TipButton username={wallpaper.uploadedBy} showToast={showToast} /></div>
-            )}
 
             {/* Creator Tipping Links */}
             {creatorProfile && (creatorProfile.tippingLinks?.kofi || creatorProfile.tippingLinks?.buyMeACoffee || creatorProfile.tippingLinks?.stripe) && (
@@ -670,158 +722,93 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
             <TagList tags={wallpaper.tags} />
             <LicenseInfo wallpaper={wallpaper} />
 
-            {/* Stats Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem', marginBottom: '1.5rem' }}>
-              <div style={{ background: 'var(--bg-main)', padding: '0.7rem', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <Eye size={16} style={{ color: 'var(--text-muted)' }} />
-                <div>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block' }}>Views</span>
-                  <strong style={{ fontSize: '0.9rem' }}>{wallpaper.viewsCount || 0}</strong>
-                </div>
-              </div>
-              <div style={{ background: 'var(--bg-main)', padding: '0.7rem', borderRadius: '6px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <Download size={16} style={{ color: 'var(--text-muted)' }} />
-                <div>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block' }}>Downloads</span>
-                  <strong style={{ fontSize: '0.9rem' }}>{wallpaper.downloadsCount || 0}</strong>
-                </div>
-              </div>
-            </div>
+            {/* Compact stats */}
+            <ul className="fw-stat-row" aria-label="Wallpaper stats">
+              <li title="Views"><Eye size={15} aria-hidden="true" /><strong>{wallpaper.viewsCount || 0}</strong><span className="fw-sr-only">views</span></li>
+              <li title="Downloads"><Download size={15} aria-hidden="true" /><strong>{wallpaper.downloadsCount || 0}</strong><span className="fw-sr-only">downloads</span></li>
+              <li title="Likes"><Heart size={15} aria-hidden="true" /><strong>{wallpaper.likesCount || 0}</strong><span className="fw-sr-only">likes</span></li>
+            </ul>
 
-            {/* Actions: Like, Add to Collection, Feature */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-              <div style={{ display: 'flex', gap: '0.6rem' }}>
-                <button
-                  type="button"
-                  className={`btn-like-action ${isLiked ? 'liked' : ''}`}
-                  onClick={async (e) => {
-                    e.preventDefault();
-                    if (onLike && wallpaper) {
-                      const res = await onLike(wallpaper._id || wallpaper.id, user);
-                      if (res) {
-                        setWallpaper(prev => prev ? {
-                          ...prev,
-                          likes: res.likes || (isLiked ? (prev.likes || []).filter(l => l !== user.id) : [...(prev.likes || []), user.id]),
-                          likesCount: res.likesCount
-                        } : null);
-                      }
-                    }
-                  }}
-                  style={{ flex: 1, height: '42px', borderRadius: '8px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontWeight: 700, cursor: 'pointer' }}
-                >
-                  <Heart size={18} fill={isLiked ? 'currentColor' : 'none'} />
-                  <span>{wallpaper.likesCount || 0} Likes</span>
-                </button>
+            {/* Primary actions: download + icon buttons; everything else lives under "more" */}
+            <div className="fw-action-bar">
+              <button type="button" className="btn btn-primary fw-action-download" onClick={handleDownloadOriginal}>
+                <Download size={18} aria-hidden="true" />
+                <span>Download</span>
+              </button>
 
-                {isAdmin && onToggleFeature && (
-                  <button
-                    type="button"
-                    onClick={() => onToggleFeature(wallpaper._id || wallpaper.id)}
-                    style={{
-                      padding: '0 1rem',
-                      height: '42px',
-                      borderRadius: '8px',
-                      background: wallpaper.isFeatured ? 'rgba(234, 179, 8, 0.15)' : 'var(--bg-main)',
-                      color: wallpaper.isFeatured ? '#f59e0b' : 'var(--text-muted)',
-                      border: wallpaper.isFeatured ? '1px solid rgba(234, 179, 8, 0.4)' : '1px solid var(--border-color)',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.3rem',
-                      fontWeight: 600
-                    }}
-                  >
-                    <Sparkles size={16} fill={wallpaper.isFeatured ? '#f59e0b' : 'none'} />
-                    <span>{wallpaper.isFeatured ? 'Featured' : 'Feature'}</span>
-                  </button>
-                )}
-              </div>
+              <button
+                type="button"
+                className={`fw-icon-btn fw-like-btn ${isLiked ? 'liked' : ''}`}
+                onClick={handleLike}
+                aria-pressed={Boolean(isLiked)}
+                aria-label={isLiked ? 'Unlike' : 'Like'}
+                title={isLiked ? 'Unlike' : 'Like'}
+              >
+                <Heart size={18} fill={isLiked ? 'currentColor' : 'none'} aria-hidden="true" />
+              </button>
 
               {user && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%' }}>
-                  <FolderPlus size={18} style={{ color: 'var(--text-muted)' }} />
-                  <select
-                    onChange={(e) => {
-                      handleAddToPlaylist(e.target.value);
-                      e.target.value = "";
-                    }}
-                    defaultValue=""
-                    className="lightbox-select"
-                    style={{ flex: 1, padding: '0.6rem', borderRadius: '8px', background: 'var(--bg-main)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}
-                  >
-                    <option value="" disabled>Add to collection...</option>
-                    {userPlaylists && userPlaylists.length > 0 ? (
-                      userPlaylists.map(pl => (
-                        <option key={pl._id || pl.id} value={pl._id || pl.id}>{pl.name}</option>
-                      ))
-                    ) : null}
-                    <option value="new">+ Create New Collection</option>
-                  </select>
-                </div>
+                <ActionMenu
+                  label="Save to collection"
+                  title="Save to collection"
+                  icon={FolderPlus}
+                  items={[
+                    ...(userPlaylists || []).map((pl) => ({
+                      key: pl._id || pl.id,
+                      label: pl.name,
+                      icon: FolderPlus,
+                      onClick: () => handleAddToPlaylist(pl._id || pl.id)
+                    })),
+                    { divider: true, hidden: !userPlaylists?.length },
+                    { key: 'new', label: 'New collection', icon: Plus, onClick: () => handleAddToPlaylist('new') }
+                  ]}
+                />
               )}
-            </div>
-          </div>
 
-          {/* Download Options Box */}
-          <div style={{ background: 'var(--bg-dropdown)', padding: '1.5rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Download Options</h3>
+              <button type="button" className="fw-icon-btn" onClick={handleShare} aria-label="Copy share link" title="Copy share link">
+                <Share2 size={18} aria-hidden="true" />
+              </button>
 
-            <button
-              className="btn btn-primary"
-              onClick={handleDownloadOriginal}
-              style={{ width: '100%', height: '44px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontWeight: 700 }}
-            >
-              <Download size={18} />
-              <span>Download Original</span>
-            </button>
-
-            <button
-              className="btn btn-outline"
-              onClick={() => {
-                const W = window.screen.width;
-                const H = window.screen.height;
-                // Start from the version closest to this screen's shape, then fit it exactly.
-                const theme = document.documentElement.getAttribute('data-theme');
-                const best = pickBestVariant(wallpaper, W, H, theme);
-                cropAndDownload(
-                  mediaUrl(best.imageUrl),
-                  `${wallpaper.title.toLowerCase().replace(/\s+/g, '-')}-device-${W}x${H}`,
-                  W / H,
-                  isAdjusted ? adjustments : null,
-                  () => {
-                    showToast('Optimizing wallpaper for your device screen...', 'info');
-                    wallpaperService.incrementDownloadCount(wallpaper._id || wallpaper.id).catch(() => {});
+              <ActionMenu
+                label="More options"
+                title="More options"
+                items={[
+                  { heading: 'Download' },
+                  { label: 'Fit to this screen', hint: `${window.screen.width}×${window.screen.height}`, icon: Smartphone, onClick: handleDeviceDownload },
+                  { heading: 'Preview & tools' },
+                  { label: 'Device previews', icon: Monitor, onClick: () => setIsMockupOpen(true) },
+                  { label: 'Span across monitors', icon: Layers, onClick: () => navigate(`/tools/multi-monitor?wallpaper=${wallpaper._id || wallpaper.id}`) },
+                  { label: 'Embed code', icon: Code2, onClick: () => setShowEmbed(true), hidden: !isPublished },
+                  { heading: 'Export palette', hidden: !paletteColors.length },
+                  ...EXPORT_FORMATS.map((format) => ({
+                    key: `export-${format.id}`,
+                    label: format.label,
+                    icon: Palette,
+                    hidden: !paletteColors.length,
+                    onClick: () => exportPaletteTheme(format, paletteColors, wallpaper.title, showToast)
+                  })),
+                  { divider: true, hidden: !(isAdmin && onToggleFeature) && !(creatorProfile?.acceptsTips && !isOwner) },
+                  {
+                    label: wallpaper.isFeatured ? 'Remove from featured' : 'Feature on homepage',
+                    icon: Sparkles,
+                    active: wallpaper.isFeatured,
+                    hidden: !(isAdmin && onToggleFeature),
+                    onClick: () => onToggleFeature(wallpaper._id || wallpaper.id)
                   },
-                  () => showToast('Device optimized image downloaded!', 'success'),
-                  (err) => showToast(`Download failed: ${err}`, 'error'),
-                  null
-                );
-              }}
-              style={{ width: '100%', height: '40px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', background: 'rgba(235, 94, 40, 0.05)', color: 'var(--accent)', border: '1px solid rgba(235, 94, 40, 0.25)', fontSize: '0.85rem' }}
-            >
-              <Smartphone size={16} />
-              <span>Download for My Device ({window.screen.width}x{window.screen.height})</span>
-            </button>
-
-            <button
-              className="btn btn-outline"
-              onClick={() => setIsMockupOpen(true)}
-              style={{ width: '100%', height: '40px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', fontSize: '0.85rem' }}
-            >
-              <Monitor size={16} />
-              <span>Interactive Device Previews</span>
-            </button>
-
-            <ImageTools wallpaper={wallpaper} palette={palette} showToast={showToast} />
+                  { label: `Tip ${wallpaper.uploadedBy}`, icon: Coffee, hidden: !(creatorProfile?.acceptsTips && !isOwner), onClick: requireUser(() => setShowTip(true)) },
+                  { divider: true, hidden: isOwner },
+                  { label: 'Report', icon: Flag, danger: true, hidden: isOwner, onClick: requireUser(() => setShowReport(true)) },
+                  { label: 'Mute creator', icon: VolumeX, danger: true, hidden: isOwner, onClick: () => muteCreator(wallpaper.uploadedBy) }
+                ]}
+              />
+            </div>
           </div>
         </div>
       </div>
 
-      {!isOwner && (
-        <div className="fw-spaced fw-safety">
-          <SafetyActions targetType="wallpaper" targetId={id} label="this wallpaper" username={wallpaper.uploadedBy} showToast={showToast} />
-        </div>
-      )}
+      {showEmbed && <EmbedDialog path={`wallpaper/${id}`} title={wallpaper.title} showToast={showToast} onClose={() => setShowEmbed(false)} />}
+      {showTip && <TipDialog username={wallpaper.uploadedBy} showToast={showToast} onClose={() => setShowTip(false)} />}
+      {showReport && <ReportDialog targetType="wallpaper" targetId={id} label="this wallpaper" showToast={showToast} onClose={() => setShowReport(false)} />}
 
       <CommentsSection wallpaperId={id} ownerId={wallpaper.uploadedById} showToast={showToast} />
 
