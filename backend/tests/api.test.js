@@ -168,7 +168,14 @@ describe('Wallpaper API', () => {
     const failRes = await request(app).put(`/api/wallpapers/${wallpaper.id}/feature`);
     expect(failRes.statusCode).toEqual(401);
 
-    // 4. Feature it (with auth -> should succeed)
+    // 4. Feature it as the owner -> should fail: featuring is for admins
+    const ownerRes = await request(app)
+      .put(`/api/wallpapers/${wallpaper.id}/feature`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(ownerRes.statusCode).toEqual(403);
+
+    // 5. Feature it as an admin -> should succeed
+    await db.User.updateOne({ _id: userId }, { $set: { role: 'admin', 'twoFactor.enabled': true } });
     const successRes = await request(app)
       .put(`/api/wallpapers/${wallpaper.id}/feature`)
       .set('Authorization', `Bearer ${token}`);
@@ -176,7 +183,7 @@ describe('Wallpaper API', () => {
     expect(successRes.statusCode).toEqual(200);
     expect(successRes.body.isFeatured).toBe(true);
 
-    // 5. Get featured list -> should return it
+    // 6. Get featured list -> should return it
     const listRes = await request(app).get('/api/wallpapers/featured');
     expect(listRes.statusCode).toEqual(200);
     expect(listRes.body.length).toBe(1);

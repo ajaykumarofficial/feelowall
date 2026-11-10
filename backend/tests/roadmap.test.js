@@ -135,21 +135,6 @@ describe('Roadmap Features API', () => {
     expect(resViews.body.wallpapers[0].title).toEqual('Popular Wallpaper');
   });
 
-  it('should sign in/up via OAuth', async () => {
-    const res = await request(app)
-      .post('/api/auth/oauth')
-      .send({
-        provider: 'Google',
-        username: 'oauth_tester',
-        oauthId: 'google_123456',
-        avatarUrl: 'https://example.com/avatar.png'
-      });
-
-    expect(res.statusCode).toEqual(200);
-    expect(res.body.token).toBeDefined();
-    expect(res.body.user.username).toEqual('oauth_tester');
-  });
-
   it('should update user bio and tipping links', async () => {
     const res = await request(app)
       .put('/api/users/profile')
@@ -181,6 +166,8 @@ describe('Roadmap Features API', () => {
   });
 
   it('should manage collaborative playlist contributors', async () => {
+    await request(app).post('/api/auth/register').send({ username: 'oauth_tester', password: 'password123' });
+
     const plRes = await request(app)
       .post('/api/playlists')
       .set('Authorization', `Bearer ${authToken}`)

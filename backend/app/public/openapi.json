@@ -1,0 +1,168 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "FeeloWall Public API",
+    "version": "1.0.0",
+    "description": "Read-only access to published wallpapers and collections. Create a key on the Developers page and send it in the X-API-Key header. Each key is limited to 60 requests per minute by default; RateLimit response headers show what's left."
+  },
+  "servers": [{ "url": "/api/public/v1" }],
+  "security": [{ "ApiKey": [] }],
+  "components": {
+    "securitySchemes": {
+      "ApiKey": { "type": "apiKey", "in": "header", "name": "X-API-Key" }
+    },
+    "schemas": {
+      "Wallpaper": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "category": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "imageUrl": { "type": "string", "format": "uri" },
+          "altText": { "type": "string" },
+          "creator": { "type": "string" },
+          "license": { "type": "string", "enum": ["personal-use", "cc-by", "cc-by-sa", "cc-by-nc", "cc0", "all-rights-reserved"] },
+          "sourceUrl": { "type": "string" },
+          "width": { "type": "integer", "nullable": true },
+          "height": { "type": "integer", "nullable": true },
+          "orientation": { "type": "string", "nullable": true, "enum": ["landscape", "portrait", "square", null] },
+          "colors": { "type": "array", "items": { "type": "string" } },
+          "likes": { "type": "integer" },
+          "views": { "type": "integer" },
+          "downloads": { "type": "integer" },
+          "uploadedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": { "message": { "type": "string" } }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing, invalid, or revoked API key",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "NotFound": {
+        "description": "Not found",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "RateLimited": {
+        "description": "Rate limit exceeded for this key",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  },
+  "paths": {
+    "/wallpapers": {
+      "get": {
+        "summary": "Search published wallpapers",
+        "parameters": [
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "category", "in": "query", "schema": { "type": "string" } },
+          { "name": "tag", "in": "query", "schema": { "type": "string" } },
+          { "name": "creator", "in": "query", "schema": { "type": "string" } },
+          { "name": "color", "in": "query", "description": "Hex color such as #1a2b3c", "schema": { "type": "string" } },
+          { "name": "resolution", "in": "query", "schema": { "type": "string", "enum": ["1080p", "1440p", "4k"] } },
+          { "name": "orientation", "in": "query", "schema": { "type": "string", "enum": ["landscape", "portrait", "square"] } },
+          { "name": "aspect", "in": "query", "schema": { "type": "string", "enum": ["ultrawide", "widescreen", "phone", "square"] } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["latest", "trending", "likes", "views", "downloads"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 24 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of wallpapers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/Wallpaper" } },
+                    "page": { "type": "integer" },
+                    "limit": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "hasMore": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/wallpapers/{id}": {
+      "get": {
+        "summary": "Get one wallpaper",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "The wallpaper",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/Wallpaper" } } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/tags": {
+      "get": {
+        "summary": "List popular tags",
+        "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "maximum": 200, "default": 50 } }],
+        "responses": {
+          "200": {
+            "description": "Tags with counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": { "type": "object", "properties": { "tag": { "type": "string" }, "count": { "type": "integer" } } }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/collections/{id}": {
+      "get": {
+        "summary": "Get a collection and its wallpapers",
+        "description": "Works for public collections, and for private ones the key's owner created or contributes to.",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "The collection" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/collections/{id}/random": {
+      "get": {
+        "summary": "Get a random wallpaper from a collection",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "redirect", "in": "query", "description": "Set to 1 to be redirected to the image file", "schema": { "type": "string", "enum": ["1"] } }
+        ],
+        "responses": {
+          "200": { "description": "A random wallpaper" },
+          "302": { "description": "Redirect to the image (with redirect=1)" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    }
+  }
+}

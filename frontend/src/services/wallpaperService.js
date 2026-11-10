@@ -1,7 +1,10 @@
 import api from './api';
 
-export const getWallpapers = async (category, search, sortBy, page = 1, limit = 12, color = null) => {
+export const getWallpapers = async (category, search, sortBy, page = 1, limit = 12, color = null, filters = {}) => {
   const params = {};
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params[key] = value;
+  }
   if (category && category !== 'All') {
     params.category = category;
   }
@@ -52,8 +55,8 @@ export const uploadWallpaper = async (data) => {
   return response.data;
 };
 
-export const updateWallpaper = async (id, title, category) => {
-  const response = await api.put(`/wallpapers/${id}`, { title, category });
+export const updateWallpaper = async (id, title, category, extra = {}) => {
+  const response = await api.put(`/wallpapers/${id}`, { title, category, ...extra });
   return response.data;
 };
 

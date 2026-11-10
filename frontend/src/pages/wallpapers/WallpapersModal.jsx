@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, X, Upload, Trash2, Type, Tag } from 'lucide-react';
+import { UploadCloud, X, Upload, Trash2, Type, Tag, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { discovery, errorMessage, mediaUrl, studio } from '../../services/platformService';
+import { Field, LICENSES, toLocalInput } from '../../components/ui';
 
 export const WallpapersModal = ({
   isOpen,
@@ -23,6 +25,58 @@ export const WallpapersModal = ({
   const [videoFile, setVideoFile] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState('');
   const videoInputRef = useRef(null);
+
+  // Details
+  const [tags, setTags] = useState('');
+  const [license, setLicense] = useState('personal-use');
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [altText, setAltText] = useState('');
+  const [isMature, setIsMature] = useState(false);
+  const [publishMode, setPublishMode] = useState('published');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    discovery.aiStatus().then((res) => setAiAvailable(res.available)).catch(() => setAiAvailable(false));
+  }, [isOpen]);
+
+  useEffect(() => {
+    setTags((editingWp?.tags || []).join(', '));
+    setLicense(editingWp?.license || 'personal-use');
+    setSourceUrl(editingWp?.sourceUrl || '');
+    setAltText(editingWp?.altText || '');
+    setIsMature(!!editingWp?.isMature);
+    setPublishMode('published');
+    setScheduledAt(toLocalInput(new Date(Date.now() + 86400000)));
+  }, [editingWp, isOpen]);
+
+  /** Fills in the form for the creator to review. Nothing is saved until they submit it. */
+  const suggestDetails = async () => {
+    if (!file) return;
+    setSuggesting(true);
+    try {
+      const suggestion = await studio.suggest(file);
+      setTitle((current) => current || suggestion.title);
+      setCategory((current) => current || suggestion.category);
+      setTags((current) => current || suggestion.tags.join(', '));
+      setAltText((current) => current || suggestion.description);
+      showToast('Suggestions added. Please check them before publishing.', 'success');
+    } catch (err) {
+      showToast(errorMessage(err, 'Could not get suggestions.'), 'error');
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const buildDetails = () => ({
+    tags,
+    license,
+    sourceUrl: sourceUrl.trim(),
+    altText: altText.trim(),
+    isMature
+  });
 
   useEffect(() => {
     if (editingWp) {
@@ -108,7 +162,7 @@ export const WallpapersModal = ({
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (editingWp) {
-      await onUpdate(editingWp._id || editingWp.id, title, category);
+      await onUpdate(editingWp._id || editingWp.id, title, category, buildDetails());
     } else {
       if (!file) {
         showToast('Please select a cover image file to upload.', 'error');
@@ -118,7 +172,11 @@ export const WallpapersModal = ({
         showToast('Please upload a video loop file for the live wallpaper.', 'error');
         return;
       }
-      const res = await onUpload(title, category, file, isLive ? videoFile : null);
+      const res = await onUpload(title, category, file, isLive ? videoFile : null, {
+        ...buildDetails(),
+        status: publishMode,
+        ...(publishMode === 'scheduled' ? { scheduledAt: new Date(scheduledAt).toISOString() } : {})
+      });
       if (res.success) {
         setTitle('');
         setCategory('');
@@ -169,7 +227,7 @@ export const WallpapersModal = ({
               <img
                 src={
                   editingWp.imageUrl.startsWith('/uploads')
-                    ? `http://localhost:5000${editingWp.imageUrl}`
+                    ? mediaUrl(editingWp.imageUrl)
                     : editingWp.imageUrl
                 }
                 alt={editingWp.title}
@@ -335,11 +393,55 @@ export const WallpapersModal = ({
             </div>
           </div>
 
+          {!editingWp && aiAvailable && file && (
+            <button type="button" className="btn btn-outline fw-wide fw-spaced" disabled={suggesting} onClick={suggestDetails}>
+              <Sparkles size={15} aria-hidden="true" /> {suggesting ? 'Looking at your image...' : 'Suggest details with AI'}
+            </button>
+          )}
+
+          <Field label="Tags, separated by commas">
+            <input className="fw-input" value={tags} placeholder="e.g. neon, city, night" onChange={(e) => setTags(e.target.value)} />
+          </Field>
+
+          <Field label="License" hint={LICENSES.find((item) => item.value === license)?.hint}>
+            <select className="fw-input" value={license} onChange={(e) => setLicense(e.target.value)} required>
+              {LICENSES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+            </select>
+          </Field>
+
+          <Field label="Source or credit link (optional)">
+            <input type="url" className="fw-input" placeholder="https://" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} />
+          </Field>
+
+          <Field label="Description for screen readers (optional)">
+            <input className="fw-input" maxLength={500} placeholder="What does the image show?" value={altText} onChange={(e) => setAltText(e.target.value)} />
+          </Field>
+
+          <label className="fw-check fw-spaced">
+            <input type="checkbox" checked={isMature} onChange={(e) => setIsMature(e.target.checked)} />
+            <span>This is mature content</span>
+          </label>
+
+          {!editingWp && (
+            <Field label="When to publish">
+              <select className="fw-input" value={publishMode} onChange={(e) => setPublishMode(e.target.value)}>
+                <option value="published">Publish now</option>
+                <option value="draft">Save as a draft</option>
+                <option value="scheduled">Schedule for later</option>
+              </select>
+            </Field>
+          )}
+          {!editingWp && publishMode === 'scheduled' && (
+            <Field label="Publish at">
+              <input type="datetime-local" className="fw-input" min={toLocalInput(new Date())} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} required />
+            </Field>
+          )}
+
           <button type="submit" className="btn btn-primary btn-block" disabled={uploadLoading}>
             {uploadLoading ? (
               <div className="spinner" style={{ width: '20px', height: '20px', margin: '0 auto', borderWidth: '2px' }}></div>
             ) : (
-              <span>{editingWp ? 'Save Changes' : 'Publish Wallpaper'}</span>
+              <span>{editingWp ? 'Save Changes' : publishMode === 'draft' ? 'Save Draft' : publishMode === 'scheduled' ? 'Schedule Wallpaper' : 'Publish Wallpaper'}</span>
             )}
           </button>
         </form>

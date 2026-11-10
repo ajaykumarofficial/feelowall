@@ -6,10 +6,26 @@ on:
       - master
       - development
 
-
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # A temporary database that exists only for this run. CI must never be given
+    # real database credentials, because the tests delete everything they connect to.
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MONGODB_URI_TEST: mongodb://127.0.0.1:27017/feelowall_test
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else
 
     defaults:
       run:
@@ -22,7 +38,8 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm install
+      - run: npm ci
 
       - run: npm run lint --if-present
 
+      - run: npm test

@@ -5,7 +5,7 @@
 const validateRegister = (req, res, next) => {
   const { username, password } = req.body;
 
-  if (!username || !password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ message: 'Username and password are required.' });
   }
 
@@ -23,7 +23,7 @@ const validateRegister = (req, res, next) => {
 const validateLogin = (req, res, next) => {
   const { username, password } = req.body;
 
-  if (!username || !password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ message: 'Username and password are required.' });
   }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../auth/useAuth';
 import playlistService from '../../services/playlistService';
 import { Folder, Lock, Globe, Plus, X, ArrowRight, BookOpen } from 'lucide-react';
+import { mediaUrl } from '../../services/platformService';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const pageVariants = {
@@ -123,7 +124,9 @@ export const PlaylistsPage = ({ onSelectPlaylist, showToast }) => {
                       style={{ cursor: 'pointer' }}
                     >
                       <div className="playlist-info">
-                        <Folder className="playlist-folder-icon" size={24} />
+                        {pl.coverWallpaperId?.imageUrl
+                          ? <img className="fw-playlist-cover" src={mediaUrl(pl.coverWallpaperId.imageUrl)} alt="" loading="lazy" />
+                          : <Folder className="playlist-folder-icon" size={24} />}
                         <h4>{pl.name}</h4>
                         <p>{pl.description || 'No description'}</p>
                       </div>
@@ -162,7 +165,9 @@ export const PlaylistsPage = ({ onSelectPlaylist, showToast }) => {
                     style={{ cursor: 'pointer' }}
                   >
                     <div className="playlist-info">
-                      <Folder className="playlist-folder-icon" size={24} />
+                      {pl.coverWallpaperId?.imageUrl
+                        ? <img className="fw-playlist-cover" src={mediaUrl(pl.coverWallpaperId.imageUrl)} alt="" loading="lazy" />
+                        : <Folder className="playlist-folder-icon" size={24} />}
                       <h4>{pl.name}</h4>
                       <p>{pl.description || 'No description'}</p>
                     </div>

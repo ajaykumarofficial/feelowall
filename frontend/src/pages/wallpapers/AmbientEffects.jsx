@@ -5,6 +5,7 @@ export const AmbientEffects = ({ type = 'none' }) => {
 
   useEffect(() => {
     if (!type || type === 'none') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;

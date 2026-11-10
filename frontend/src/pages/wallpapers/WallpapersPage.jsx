@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { GalleryFilters, TagSuggestions } from './GalleryFilters';
+import { activatable } from '../../components/ui';
 
 const pageVariants = {
   initial: { opacity: 0, y: 15 },
@@ -61,8 +63,11 @@ export const WallpapersPage = ({
   colorQuery,
   onColorChange,
   featuredWallpapers,
+  featuredLoaded = true,
   onToggleFeature,
-  onStartSlideshow
+  onStartSlideshow,
+  filters = {},
+  onFiltersChange
 }) => {
   const navigate = useNavigate();
   const sentinelRef = useRef(null);
@@ -105,7 +110,9 @@ export const WallpapersPage = ({
       transition={pageTransition}
     >
       {/* HERO / FEATURED SECTION */}
-      {featuredWallpapers && featuredWallpapers.length > 0 ? (
+      {!featuredLoaded ? (
+        <div className="fw-hero-placeholder" aria-hidden="true" />
+      ) : featuredWallpapers && featuredWallpapers.length > 0 ? (
         <motion.header
           className="featured-hero"
           initial={{ opacity: 0, y: 20 }}
@@ -162,6 +169,7 @@ export const WallpapersPage = ({
                     onChange={(e) => setSearchInput(e.target.value)}
                   />
                   <button type="submit" className="btn btn-primary btn-search">Search</button>
+                  <TagSuggestions query={searchInput} />
                 </form>
               </div>
             </div>
@@ -203,6 +211,7 @@ export const WallpapersPage = ({
                   onChange={(e) => setSearchInput(e.target.value)}
                 />
                 <button type="submit" className="btn btn-primary btn-search">Search</button>
+                <TagSuggestions query={searchInput} />
               </form>
             </div>
           </div>
@@ -280,6 +289,8 @@ export const WallpapersPage = ({
               </div>
             </div>
 
+            {onFiltersChange && <GalleryFilters filters={filters} onChange={onFiltersChange} />}
+
             <div className="gallery-sorting">
               <label htmlFor="sortBySelect" style={{ marginRight: '0.5rem', fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-muted)' }}>Sort by</label>
               <select
@@ -289,6 +300,7 @@ export const WallpapersPage = ({
                 className="select-dropdown"
               >
                 <option value="latest">Newest</option>
+                <option value="trending">Trending</option>
                 <option value="likes">Most Liked</option>
                 <option value="views">Most Viewed</option>
                 <option value="downloads">Most Downloaded</option>
@@ -360,9 +372,11 @@ export const WallpapersPage = ({
                   viewport={{ once: true, margin: "0px 0px -40px 0px" }}
                   transition={{ duration: 0.35, delay: (index % 8) * 0.04 }}
                   onClick={() => onZoom(wp)}
+                  {...activatable(() => onZoom(wp))}
+                  aria-label={wp.title}
                 >
                   <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                    <img src={imgSource} alt={wp.title} loading="lazy" />
+                    <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                     {wp.isLive && (
                       <span className="live-badge" style={{
                         position: 'absolute',

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>FeeloWall New Tab Settings</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="options">
+  <main>
+    <h1>FeeloWall New Tab</h1>
+    <form id="form">
+      <label>
+        FeeloWall server address
+        <input id="apiUrl" type="url" required placeholder="https://api.example.com">
+      </label>
+      <label>
+        Show wallpapers from
+        <select id="source">
+          <option value="featured">Featured wallpapers</option>
+          <option value="collection">A public collection</option>
+        </select>
+      </label>
+      <label id="collectionField">
+        Collection ID (the last part of its web address)
+        <input id="collectionId" type="text" pattern="[a-fA-F0-9]{24}">
+      </label>
+      <button type="submit">Save</button>
+      <p id="status" role="status"></p>
+    </form>
+  </main>
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

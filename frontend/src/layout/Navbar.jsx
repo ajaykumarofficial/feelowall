@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../pages/auth/useAuth';
+import { useI18n } from '../i18n';
+import NotificationBell from './NotificationBell';
+import { TagSuggestions } from '../pages/wallpapers/GalleryFilters';
 const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 import {
@@ -15,7 +19,12 @@ import {
   Folder,
   Sparkles,
   Smartphone,
-  Layers
+  Layers,
+  LayoutGrid,
+  Settings,
+  ShieldCheck,
+  Clapperboard,
+  Globe
 } from 'lucide-react';
 
 const Navbar = ({
@@ -36,12 +45,26 @@ const Navbar = ({
   const { user, logout, openAuth } = useAuth();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const navigate = useNavigate();
+  const { t, language, setLanguage, languages } = useI18n();
+  const [isDiscoverOpen, setIsDiscoverOpen] = useState(false);
+  const discoverRef = useRef(null);
+  const isStaff = user && ['admin', 'moderator'].includes(user.role);
+
+  const go = (path) => {
+    navigate(path);
+    setIsDropdownOpen(false);
+    setIsDiscoverOpen(false);
+  };
 
   // Close dropdown on click outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setIsDropdownOpen(false);
+      }
+      if (discoverRef.current && !discoverRef.current.contains(event.target)) {
+        setIsDiscoverOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -51,9 +74,9 @@ const Navbar = ({
   }, []);
 
   return (
-    <nav className="navbar">
+    <nav className="navbar" aria-label="Main">
       <div className="nav-container">
-        <div className="nav-brand" onClick={handleBrandClick}>
+        <div className="nav-brand" role="link" tabIndex={0} aria-label="FeeloWall home" onClick={handleBrandClick} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleBrandClick()}>
           <Image className="brand-icon" size={28} />
           <span className="brand-text">Feelo<span className="brand-accent">Wall</span></span>
         </div>
@@ -64,10 +87,12 @@ const Navbar = ({
             <Search className="search-icon" size={18} />
             <input
               type="text"
-              placeholder="Search wallpapers..."
+              placeholder={t('nav.search')}
+              aria-label={t('nav.search')}
               value={navSearch}
               onChange={(e) => setNavSearch(e.target.value)}
             />
+            <TagSuggestions query={navSearch} />
           </form>
         )}
 
@@ -79,7 +104,7 @@ const Navbar = ({
             title="Explore Wallpapers"
           >
             <Compass size={18} />
-            <span className="nav-btn-text">Explore</span>
+            <span className="nav-btn-text">{t('nav.explore')}</span>
           </button>
 
           <button
@@ -88,34 +113,77 @@ const Navbar = ({
             title="Thematic Collections"
           >
             <Folder size={18} />
-            <span className="nav-btn-text">Collections</span>
+            <span className="nav-btn-text">{t('nav.collections')}</span>
           </button>
 
           <button
-            className={`btn-nav-link ${currentPage === 'generator' ? 'active' : ''}`}
+            className={`btn-nav-link fw-hide-phone ${currentPage === 'generator' ? 'active' : ''}`}
             onClick={() => setCurrentPage('generator')}
             title="Generative Shader Art"
           >
             <Sparkles size={18} />
-            <span className="nav-btn-text">Create Art</span>
+            <span className="nav-btn-text">{t('nav.createArt')}</span>
           </button>
 
           {user && (
             <button
-              className={`btn-nav-link ${currentPage === 'feed' ? 'active' : ''}`}
+              className={`btn-nav-link fw-hide-phone ${currentPage === 'feed' ? 'active' : ''}`}
               onClick={() => setCurrentPage('feed')}
               title="Creator Feed"
             >
               <Sparkles size={18} />
-              <span className="nav-btn-text">Feed</span>
+              <span className="nav-btn-text">{t('nav.feed')}</span>
             </button>
           )}
+
+          <div className="nav-profile-container" ref={discoverRef}>
+            <button
+              type="button"
+              className="btn-nav-link"
+              aria-expanded={isDiscoverOpen}
+              onClick={() => setIsDiscoverOpen(!isDiscoverOpen)}
+              title={t('nav.discover')}
+            >
+              <LayoutGrid size={18} aria-hidden="true" />
+              <span className="nav-btn-text">{t('nav.discover')}</span>
+            </button>
+            {isDiscoverOpen && (
+              <div className="nav-dropdown">
+                {user && <button className="dropdown-item fw-phone-only" onClick={() => go('/feed')}><Sparkles size={16} aria-hidden="true" /><span>{t('nav.feed')}</span></button>}
+                <button className="dropdown-item fw-phone-only" onClick={() => go('/generator')}><Sparkles size={16} aria-hidden="true" /><span>{t('nav.createArt')}</span></button>
+                {user && <button className="dropdown-item" onClick={() => go('/for-you')}><Sparkles size={16} aria-hidden="true" /><span>{t('nav.forYou')}</span></button>}
+                <button className="dropdown-item" onClick={() => go('/challenges')}><Clapperboard size={16} aria-hidden="true" /><span>{t('nav.challenges')}</span></button>
+                <button className="dropdown-item" onClick={() => go('/leaderboard')}><UserCheck size={16} aria-hidden="true" /><span>{t('nav.leaderboard')}</span></button>
+                <button className="dropdown-item" onClick={() => go('/packs')}><Layers size={16} aria-hidden="true" /><span>{t('nav.packs')}</span></button>
+                <button className="dropdown-item" onClick={() => go('/tools/multi-monitor')}><Image size={16} aria-hidden="true" /><span>{t('nav.multiMonitor')}</span></button>
+                <button className="dropdown-item" onClick={() => go('/developers')}><Settings size={16} aria-hidden="true" /><span>{t('nav.developers')}</span></button>
+                <label className="dropdown-item fw-language fw-phone-only">
+                  <Globe size={16} aria-hidden="true" />
+                  <span className="fw-sr-only">{t('nav.language')}</span>
+                  <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                    {languages.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
+
+          <label className="fw-language fw-hide-phone" title={t('nav.language')}>
+            <Globe size={16} aria-hidden="true" />
+            <span className="fw-sr-only">{t('nav.language')}</span>
+            <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+              {languages.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+            </select>
+          </label>
+
+          {user && <NotificationBell />}
 
           {/* Theme Toggle */}
           <button
             className="btn-theme-toggle"
             onClick={toggleTheme}
-            title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            title={theme === 'dark' ? t('nav.theme.light') : t('nav.theme.dark')}
+            aria-label={theme === 'dark' ? t('nav.theme.light') : t('nav.theme.dark')}
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -126,6 +194,8 @@ const Navbar = ({
                 className="nav-avatar"
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                 title="Profile Menu"
+                aria-label="Profile menu"
+                aria-expanded={isDropdownOpen}
                 style={{ padding: user.avatarUrl ? '0' : '' }}
               >
                 {user.avatarUrl ? (
@@ -143,7 +213,7 @@ const Navbar = ({
               {isDropdownOpen && (
                 <div className="nav-dropdown">
                   <div className="dropdown-header">
-                    <span className="dropdown-header-label">Signed in as</span>
+                    <span className="dropdown-header-label">{t('menu.signedInAs')}</span>
                     <span className="dropdown-header-username">{user.username}</span>
                   </div>
                   <div className="dropdown-divider"></div>
@@ -156,7 +226,12 @@ const Navbar = ({
                     }}
                   >
                     <User size={16} />
-                    <span>My Dashboard</span>
+                    <span>{t('menu.dashboard')}</span>
+                  </button>
+
+                  <button className="dropdown-item" onClick={() => go('/studio')}>
+                    <Clapperboard size={16} aria-hidden="true" />
+                    <span>{t('menu.studio')}</span>
                   </button>
 
                   <button
@@ -167,7 +242,7 @@ const Navbar = ({
                     }}
                   >
                     <UploadCloud size={16} />
-                    <span>Upload Wallpaper</span>
+                    <span>{t('menu.upload')}</span>
                   </button>
 
                   <button
@@ -178,8 +253,20 @@ const Navbar = ({
                     }}
                   >
                     <Layers size={16} />
-                    <span>Bulk Upload</span>
+                    <span>{t('menu.bulkUpload')}</span>
                   </button>
+
+                  <button className="dropdown-item" onClick={() => go('/settings')}>
+                    <Settings size={16} aria-hidden="true" />
+                    <span>{t('menu.settings')}</span>
+                  </button>
+
+                  {isStaff && (
+                    <button className="dropdown-item" onClick={() => go('/admin')}>
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      <span>{t('menu.admin')}</span>
+                    </button>
+                  )}
 
                   {deferredPrompt && (
                     <button
@@ -191,7 +278,7 @@ const Navbar = ({
                       style={{ color: 'var(--accent)', fontWeight: 600 }}
                     >
                       <Smartphone size={16} />
-                      <span>Install App</span>
+                      <span>{t('menu.install')}</span>
                     </button>
                   )}
 
@@ -207,7 +294,7 @@ const Navbar = ({
                     }}
                   >
                     <LogOut size={16} />
-                    <span>Log Out</span>
+                    <span>{t('menu.logout')}</span>
                   </button>
                 </div>
               )}
@@ -219,7 +306,7 @@ const Navbar = ({
               title="Sign In"
             >
               <UserCheck size={18} />
-              <span className="nav-btn-text">Sign In</span>
+              <span className="nav-btn-text">{t('nav.signIn')}</span>
             </button>
           )}
         </div>

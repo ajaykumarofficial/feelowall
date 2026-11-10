@@ -14,11 +14,13 @@ export const useWallpapers = (showToast) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('latest');
   const [colorQuery, setColorQuery] = useState(null);
+  const [filters, setFilters] = useState({});
   const [lightboxWp, setLightboxWp] = useState(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [editingWp, setEditingWp] = useState(null);
   const [featuredWallpapers, setFeaturedWallpapers] = useState([]);
+  const [featuredLoaded, setFeaturedLoaded] = useState(false);
 
   const fetchFeatured = useCallback(async () => {
     try {
@@ -26,6 +28,8 @@ export const useWallpapers = (showToast) => {
       setFeaturedWallpapers(data || []);
     } catch (error) {
       console.error('Failed to fetch featured wallpapers:', error);
+    } finally {
+      setFeaturedLoaded(true);
     }
   }, []);
 
@@ -34,11 +38,11 @@ export const useWallpapers = (showToast) => {
   }, [fetchFeatured]);
 
   // Fetch page 1 (reset) whenever filters/category/sort change
-  const fetchWallpapers = useCallback(async (cat = category, search = searchQuery, sort = sortBy, col = colorQuery) => {
+  const fetchWallpapers = useCallback(async (cat = category, search = searchQuery, sort = sortBy, col = colorQuery, activeFilters = filters) => {
     setLoading(true);
     setPage(1);
     try {
-      const data = await wallpaperService.getWallpapers(cat, search, sort, 1, PAGE_SIZE, col);
+      const data = await wallpaperService.getWallpapers(cat, search, sort, 1, PAGE_SIZE, col, activeFilters);
       setWallpapers(data.wallpapers);
       setHasMore(data.hasMore);
     } catch (error) {
@@ -47,7 +51,7 @@ export const useWallpapers = (showToast) => {
     } finally {
       setLoading(false);
     }
-  }, [category, searchQuery, sortBy, colorQuery, showToast]);
+  }, [category, searchQuery, sortBy, colorQuery, filters, showToast]);
 
   // Load next page (append)
   const loadMore = useCallback(async () => {
@@ -55,7 +59,7 @@ export const useWallpapers = (showToast) => {
     setLoadingMore(true);
     const nextPage = page + 1;
     try {
-      const data = await wallpaperService.getWallpapers(category, searchQuery, sortBy, nextPage, PAGE_SIZE, colorQuery);
+      const data = await wallpaperService.getWallpapers(category, searchQuery, sortBy, nextPage, PAGE_SIZE, colorQuery, filters);
       setWallpapers(prev => [...prev, ...data.wallpapers]);
       setHasMore(data.hasMore);
       setPage(nextPage);
@@ -65,11 +69,11 @@ export const useWallpapers = (showToast) => {
     } finally {
       setLoadingMore(false);
     }
-  }, [category, searchQuery, sortBy, page, hasMore, loadingMore, colorQuery, showToast]);
+  }, [category, searchQuery, sortBy, page, hasMore, loadingMore, colorQuery, filters, showToast]);
 
   useEffect(() => {
     fetchWallpapers();
-  }, [category, searchQuery, sortBy, colorQuery]);
+  }, [category, searchQuery, sortBy, colorQuery, filters]);
 
   const handleCategoryChange = (newCat) => {
     setCategory(newCat);
@@ -82,9 +86,10 @@ export const useWallpapers = (showToast) => {
   const handleResetFilters = () => {
     setCategory('All');
     setSearchQuery('');
+    setFilters({});
   };
 
-  const handleUpload = async (title, uploadCat, file, videoFile = null) => {
+  const handleUpload = async (title, uploadCat, file, videoFile = null, details = {}) => {
     setUploadLoading(true);
     try {
       // Extract dominant colors from the image file on the client side
@@ -136,10 +141,16 @@ export const useWallpapers = (showToast) => {
         filename: publicId,
         colors: extractedColors,
         isLive: !!videoFile,
-        videoUrl: videoUrl
+        videoUrl: videoUrl,
+        ...details
       });
 
-      showToast('Wallpaper uploaded successfully!', 'success');
+      showToast(
+        details.status === 'draft' ? 'Draft saved. Find it in Creator Studio.'
+          : details.status === 'scheduled' ? 'Wallpaper scheduled. Find it in Creator Studio.'
+            : 'Wallpaper uploaded successfully!',
+        'success'
+      );
       setIsUploadOpen(false);
       fetchWallpapers(); // reload wallpaper grid
       return { success: true };
@@ -152,10 +163,10 @@ export const useWallpapers = (showToast) => {
     }
   };
 
-  const handleUpdate = async (id, title, updateCat) => {
+  const handleUpdate = async (id, title, updateCat, details = {}) => {
     setUploadLoading(true);
     try {
-      await wallpaperService.updateWallpaper(id, title, updateCat);
+      await wallpaperService.updateWallpaper(id, title, updateCat, details);
       showToast('Wallpaper updated successfully!', 'success');
       setIsUploadOpen(false);
       setEditingWp(null);
@@ -390,11 +401,14 @@ export const useWallpapers = (showToast) => {
     setSortBy,
     colorQuery,
     setColorQuery,
+    filters,
+    setFilters,
     lightboxWp,
     isUploadOpen,
     uploadLoading,
     editingWp,
     featuredWallpapers,
+    featuredLoaded,
     isBulkUploadOpen,
     openBulkUpload,
     closeBulkUpload,

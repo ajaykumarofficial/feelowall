@@ -16,6 +16,7 @@ const pageTransition = {
 import AuthTable from './AuthTable';
 import { User, LogIn, Heart, Eye, Download, Camera, Settings, Laptop, Clipboard, Check, Key, Code, HelpCircle, Coffee, DollarSign, Settings2, BarChart2, TrendingUp, Sparkles } from 'lucide-react';
 import userService from '../../services/userService';
+import { activatable } from '../../components/ui';
 
 const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -356,9 +357,11 @@ export const AuthPage = ({ wallpapers, onEdit, onDelete, onZoom, onLike, showToa
                         key={wp._id || wp.id}
                         className="wallpaper-card"
                         onClick={() => onZoom(wp)}
+                        {...activatable(() => onZoom(wp))}
+                        aria-label={wp.title}
                       >
                         <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                          <img src={imgSource} alt={wp.title} loading="lazy" />
+                          <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                           {wp.isLive && (
                             <span className="live-badge" style={{
                               position: 'absolute',

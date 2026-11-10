@@ -2,8 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const cloudinary = require('./cloudinary');
-const { Wallpaper } = require('../databaseModels');
-const { localQueue, getUseRedis, redisConnection } = require('./queue');
+const { Wallpaper, Report } = require('../databaseModels');
+const { computeDHash, findDuplicate, describeDimensions } = require('./perceptualHash');
+const ai = require('./ai');
+const { reportError } = require('./logger');
+const { localQueue, redisConnection } = require('./queue');
 const { Worker } = require('bullmq');
 
 // Helper to convert RGB to HEX
@@ -104,6 +107,41 @@ const downloadImage = (url, destPath) => {
   });
 };
 
+/**
+ * Facts about the image, plus two automatic checks. Neither check removes
+ * anything: they only add an item to the moderation queue for a person to judge.
+ */
+const analyzeImage = async (wpId, imagePath, webpBuffer) => {
+  const { width, height } = await sharp(imagePath).metadata();
+  const perceptualHash = await computeDHash(webpBuffer);
+  const updates = { ...describeDimensions(width, height), perceptualHash };
+
+  const duplicate = await findDuplicate(Wallpaper, wpId, perceptualHash);
+  if (duplicate) {
+    updates.duplicateOf = duplicate._id;
+    await Report.create({
+      targetType: 'wallpaper',
+      targetId: wpId,
+      reason: 'duplicate',
+      details: `Looks nearly identical to wallpaper ${duplicate._id}.`
+    });
+  }
+
+  if (ai.isAiConfigured()) {
+    try {
+      const check = await ai.preCheckImage(webpBuffer);
+      if (check.mature) updates.isMature = true;
+      if (check.needsReview) {
+        await Report.create({ targetType: 'wallpaper', targetId: wpId, reason: 'ai-flag', details: check.reason });
+      }
+    } catch (err) {
+      // The check is advisory, so a failure must not stop the upload from processing.
+      reportError(err, { source: 'ai-precheck' });
+    }
+  }
+  return updates;
+};
+
 // Main processing worker function
 const processImageJob = async (jobData) => {
   const { wpId, filePath, isCloudinary, originalFilename, imageUrl } = jobData;
@@ -137,6 +175,8 @@ const processImageJob = async (jobData) => {
     // 2. Extract Dominant Colors
     const extractedColors = await extractDominantColors(webpBuffer);
     console.log(`[Worker] Extracted dominant colors:`, extractedColors.map(c => c.hex));
+
+    const analysis = await analyzeImage(wpId, activePath, webpBuffer);
 
     let finalImageUrl = '';
     let finalFilename = '';
@@ -186,8 +226,9 @@ const processImageJob = async (jobData) => {
       { _id: wpId },
       {
         $set: {
-          imageUrl: finalImageUrl,
-          filename: finalFilename,
+          ...analysis,
+          // Without Cloudinary credentials a remote image can't be re-uploaded, so it stays where it is.
+          ...(finalImageUrl ? { imageUrl: finalImageUrl, filename: finalFilename } : {}),
           colors: extractedColors
         }
       }
@@ -211,7 +252,7 @@ localQueue.setProcessor(async (job) => {
 });
 
 // Register Redis Worker if active
-if (getUseRedis() && redisConnection) {
+const startBullWorker = () => {
   const worker = new Worker('image-processing', async (job) => {
     console.log(`[BullMQ Worker] Processing job ${job.id}...`);
     await processImageJob(job.data);
@@ -224,6 +265,11 @@ if (getUseRedis() && redisConnection) {
   worker.on('failed', (job, err) => {
     console.error(`[BullMQ Worker] Job ${job.id} failed with error:`, err);
   });
+};
+
+// Start once Redis is actually ready. Checking at load time always found it not connected yet.
+if (redisConnection) {
+  redisConnection.once('ready', startBullWorker);
 }
 
 module.exports = {

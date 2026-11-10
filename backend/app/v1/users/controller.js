@@ -1,7 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 const cloudinary = require('../../../helper/cloudinary');
-const { User } = require('../../../databaseModels');
+const {
+  User, Wallpaper, Playlist, Comment, Notification, SavedSearch, AuthToken, ApiKey,
+  DownloadHistory, Payment, Pack, Report, DailyAnalytics
+} = require('../../../databaseModels');
+const { comparePassword } = require('../../../helper/bcrypt');
+const { exactCI, normalizeTag } = require('../../../helper/text');
+const { publicFilter } = require('../../../helper/visibility');
+const { notify } = require('../../../helper/notifications');
+const { selfView } = require('../../../helper/accountView');
+const { asyncHandler, HttpError } = require('../../../helper/asyncHandler');
+const totp = require('../../../helper/totp');
 
 /**
  * Follow or unfollow a user by their username
@@ -16,7 +26,7 @@ const toggleFollowUser = async (req, res) => {
     }
 
     // Find the target user
-    const targetUser = await User.findOne({ username: { $regex: new RegExp('^' + username + '$', 'i') } });
+    const targetUser = await User.findOne({ username: exactCI(username) });
     if (!targetUser) {
       return res.status(404).json({ message: 'User not found.' });
     }
@@ -44,6 +54,18 @@ const toggleFollowUser = async (req, res) => {
     }
 
     await currentUser.save();
+
+    if (followed) {
+      await notify({
+        userId: targetUser._id,
+        type: 'follow',
+        actorId: currentUser._id,
+        actorName: currentUser.username,
+        text: 'started following you',
+        link: `/creator/${encodeURIComponent(currentUser.username)}`,
+        groupKey: 'follow'
+      });
+    }
 
     res.status(200).json({
       message: followed ? `You followed ${targetUser.username}.` : `You unfollowed ${targetUser.username}.`,
@@ -221,21 +243,20 @@ const getCreatorProfile = async (req, res) => {
     const currentUserId = req.user ? req.user.id : null;
 
     // Find the target user
-    const targetUser = await User.findOne({ username: { $regex: new RegExp('^' + username + '$', 'i') } })
-      .select('-passwordHash');
+    const targetUser = await User.findOne({ username: exactCI(username) })
+      .select('username avatarUrl bio tippingLinks createdAt status isVerified badges stripeChargesEnabled');
 
-    if (!targetUser) {
+    if (!targetUser || targetUser.status === 'suspended') {
       return res.status(404).json({ message: 'Creator not found.' });
     }
 
-    // Import other models here to avoid circular imports if any
-    const { Wallpaper, Playlist } = require('../../../databaseModels');
-
     // Find wallpapers uploaded by this user
-    const wallpapers = await Wallpaper.find({ uploadedById: targetUser._id }).sort({ uploadedAt: -1 });
+    const wallpapers = await Wallpaper.find({ uploadedById: targetUser._id, ...publicFilter() }).sort({ uploadedAt: -1 });
 
     // Find public playlists created by this user
-    const playlists = await Playlist.find({ creatorId: targetUser._id, isPublic: true }).sort({ createdAt: -1 });
+    const playlists = await Playlist.find({ creatorId: targetUser._id, isPublic: true })
+      .sort({ createdAt: -1 })
+      .populate({ path: 'coverWallpaperId', select: 'imageUrl status', match: publicFilter() });
 
     // Calculate stats
     const totalViews = wallpapers.reduce((sum, wp) => sum + (wp.viewsCount || 0), 0);
@@ -255,7 +276,18 @@ const getCreatorProfile = async (req, res) => {
     }
 
     const hasGenerative = wallpapers.some(wp => wp.tags && (wp.tags.includes('generative') || wp.tags.includes('shader')));
-    const achievements = calculateAchievements({ totalViews, totalDownloads, totalLikes }, wallpapers.length, hasGenerative);
+    const achievements = [
+      ...calculateAchievements({ totalViews, totalDownloads, totalLikes }, wallpapers.length, hasGenerative),
+      ...(targetUser.badges || []).map((badge) => ({
+        id: badge.id,
+        name: badge.name,
+        desc: badge.desc,
+        type: 'special',
+        target: 1,
+        current: 1,
+        unlocked: true
+      }))
+    ];
 
     res.status(200).json({
       id: targetUser._id,
@@ -264,6 +296,8 @@ const getCreatorProfile = async (req, res) => {
       bio: targetUser.bio || '',
       tippingLinks: targetUser.tippingLinks || { kofi: '', buyMeACoffee: '', stripe: '' },
       createdAt: targetUser.createdAt,
+      isVerified: !!targetUser.isVerified,
+      acceptsTips: !!targetUser.stripeChargesEnabled,
       wallpapers,
       playlists,
       stats: {
@@ -293,7 +327,6 @@ const getCreatorAnalytics = async (req, res) => {
     cutoffDate.setUTCDate(cutoffDate.getUTCDate() - days + 1);
 
     const mongoose = require('mongoose');
-    const { DailyAnalytics } = require('../../../databaseModels');
 
     const analyticsData = await DailyAnalytics.aggregate([
       {
@@ -345,7 +378,240 @@ const getCreatorAnalytics = async (req, res) => {
   }
 };
 
+// ─── Leaderboards ────────────────────────────────────────────
+
+const LEADERBOARD_PERIODS = { week: 7, month: 30 };
+
+/** Top creators by activity on their wallpapers, weighted the same way as trending. */
+const getLeaderboard = asyncHandler(async (req, res) => {
+  const period = LEADERBOARD_PERIODS[req.query.period] ? req.query.period : 'week';
+  const since = new Date();
+  since.setUTCHours(0, 0, 0, 0);
+  since.setUTCDate(since.getUTCDate() - LEADERBOARD_PERIODS[period] + 1);
+
+  const rows = await DailyAnalytics.aggregate([
+    { $match: { date: { $gte: since } } },
+    { $group: {
+      _id: '$creatorId',
+      views: { $sum: '$views' },
+      downloads: { $sum: '$downloads' },
+      likes: { $sum: '$likes' }
+    } },
+    { $addFields: { score: { $add: ['$views', { $multiply: ['$downloads', 3] }, { $multiply: ['$likes', 5] }] } } },
+    { $match: { score: { $gt: 0 } } },
+    { $sort: { score: -1 } },
+    { $limit: 100 },
+    { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+    { $unwind: '$user' },
+    { $match: { 'user.status': { $ne: 'suspended' } } },
+    { $limit: 50 }
+  ]);
+
+  res.status(200).json({
+    period,
+    creators: rows.map((row, index) => ({
+      rank: index + 1,
+      username: row.user.username,
+      avatarUrl: row.user.avatarUrl || '',
+      isVerified: !!row.user.isVerified,
+      views: row.views,
+      downloads: row.downloads,
+      likes: row.likes,
+      score: row.score
+    }))
+  });
+});
+
+// ─── Preferences ─────────────────────────────────────────────
+
+const updatePreferences = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (typeof req.body.showMature === 'boolean') user.showMature = req.body.showMature;
+  await user.save();
+  res.status(200).json({ message: 'Preferences saved.', user: selfView(user) });
+});
+
+/** Add or remove a value from one of the user's preference lists. */
+const toggleInList = (list, value) => {
+  const index = list.findIndex((item) => String(item) === String(value));
+  if (index === -1) list.push(value);
+  else list.splice(index, 1);
+  return index === -1;
+};
+
+const toggleTagList = (field, label) => asyncHandler(async (req, res) => {
+  const tag = normalizeTag(req.params.tag || '');
+  if (!tag) throw new HttpError(400, 'Please choose a tag.');
+  const user = await User.findById(req.user.id);
+  const active = toggleInList(user[field], tag);
+  await user.save();
+  res.status(200).json({ message: `${active ? label.on : label.off} #${tag}.`, active, tags: user[field] });
+});
+
+const toggleFollowTag = toggleTagList('followedTags', { on: 'Following', off: 'Unfollowed' });
+const toggleMuteTag = toggleTagList('mutedTags', { on: 'Muted', off: 'Unmuted' });
+
+const toggleMuteUser = asyncHandler(async (req, res) => {
+  const target = await User.findOne({ username: exactCI(req.params.username) }).select('username').lean();
+  if (!target) throw new HttpError(404, 'User not found.');
+  if (String(target._id) === req.user.id) throw new HttpError(400, 'You can\'t mute yourself.');
+  const user = await User.findById(req.user.id);
+  const active = toggleInList(user.mutedUsers, target._id);
+  await user.save();
+  res.status(200).json({ message: `${active ? 'Muted' : 'Unmuted'} ${target.username}.`, active });
+});
+
+const getMutedUsers = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id).populate('mutedUsers', 'username').lean();
+  res.status(200).json({ users: (user.mutedUsers || []).map((muted) => muted.username), tags: user.mutedTags || [] });
+});
+
+// ─── Download history ────────────────────────────────────────
+
+const getDownloads = asyncHandler(async (req, res) => {
+  const rows = await DownloadHistory.find({ userId: req.user.id })
+    .sort({ downloadedAt: -1 })
+    .limit(200)
+    .populate('wallpaperId', 'title imageUrl uploadedBy status altText')
+    .lean();
+  res.status(200).json({
+    downloads: rows
+      .filter((row) => row.wallpaperId && !['removed', 'hidden'].includes(row.wallpaperId.status))
+      .map((row) => ({ id: String(row._id), downloadedAt: row.downloadedAt, wallpaper: row.wallpaperId }))
+  });
+});
+
+const clearDownloads = asyncHandler(async (req, res) => {
+  await DownloadHistory.deleteMany({ userId: req.user.id });
+  res.status(200).json({ message: 'Download history cleared.' });
+});
+
+const removeDownload = asyncHandler(async (req, res) => {
+  await DownloadHistory.deleteOne({ _id: req.params.id, userId: req.user.id });
+  res.status(200).json({ message: 'Removed from history.' });
+});
+
+// ─── Data export & account deletion ──────────────────────────
+
+const exportMyData = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const [user, wallpapers, playlists, comments, liked, downloads, savedSearches, payments, packs] = await Promise.all([
+    User.findById(userId).select('-passwordHash -twoFactor -tokenVersion').populate('following', 'username').lean(),
+    Wallpaper.find({ uploadedById: userId }).select('-likes').lean(),
+    Playlist.find({ creatorId: userId }).lean(),
+    Comment.find({ authorId: userId, status: 'visible' }).select('wallpaperId text createdAt').lean(),
+    Wallpaper.find({ likes: userId }).select('title').lean(),
+    DownloadHistory.find({ userId }).lean(),
+    SavedSearch.find({ userId }).lean(),
+    Payment.find({ buyerId: userId }).select('-stripeSessionId -stripePaymentIntentId').lean(),
+    Pack.find({ creatorId: userId }).lean()
+  ]);
+
+  res.setHeader('Content-Disposition', 'attachment; filename="feelowall-data.json"');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.status(200).json({
+    exportedAt: new Date(),
+    account: user,
+    wallpapers,
+    collections: playlists,
+    comments,
+    likedWallpapers: liked,
+    downloadHistory: downloads,
+    savedSearches,
+    purchases: payments,
+    packs
+  });
+});
+
+/**
+ * What deletion does:
+ * - Removed: profile, uploads and their files, owned collections, saved searches,
+ *   notifications, API keys, download history, and reports the user filed.
+ * - Anonymised: comments stay in their threads as "[deleted]".
+ * - Kept: payment records, for accounting, with the buyer removed. Packs that have
+ *   sold stay available to their buyers, so those wallpapers are kept too.
+ */
+const deleteMyAccount = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id);
+  const { password, confirmUsername, code } = req.body;
+
+  if (user.oauthProvider) {
+    if (confirmUsername !== user.username) throw new HttpError(400, 'Type your username to confirm.');
+  } else if (typeof password !== 'string' || !await comparePassword(password, user.passwordHash)) {
+    throw new HttpError(400, 'Your password is incorrect.');
+  }
+
+  if (user.twoFactor?.enabled) {
+    const secret = totp.decryptSecret(user.twoFactor.secret);
+    const validCode = totp.verifyCode(secret, code, user.twoFactor.lastUsedStep || 0) !== null
+      || (user.twoFactor.recoveryCodes || []).includes(totp.hashRecoveryCode(code));
+    if (!validCode) throw new HttpError(400, 'Your authentication code is incorrect.');
+  }
+
+  if (user.role === 'admin' && await User.countDocuments({ role: 'admin' }) <= 1) {
+    throw new HttpError(400, 'Make someone else an admin before deleting the only admin account.');
+  }
+
+  const { destroyWallpaper } = require('../wallpapers/controller');
+  const userId = user._id;
+
+  // Keep wallpapers that buyers have paid for.
+  const packs = await Pack.find({ creatorId: userId });
+  const keptWallpapers = new Set();
+  for (const pack of packs) {
+    const sold = await Payment.exists({ type: 'pack', packId: pack._id, status: 'paid' });
+    if (sold) {
+      pack.status = 'archived';
+      await pack.save();
+      pack.wallpapers.forEach((id) => keptWallpapers.add(String(id)));
+    } else {
+      await Pack.deleteOne({ _id: pack._id });
+    }
+  }
+
+  const wallpapers = await Wallpaper.find({ uploadedById: userId });
+  for (const wallpaper of wallpapers) {
+    if (!keptWallpapers.has(String(wallpaper._id))) await destroyWallpaper(wallpaper);
+  }
+
+  const removeFromLikes = await Wallpaper.find({ likes: userId }).select('_id').lean();
+  await Promise.all(removeFromLikes.map((wallpaper) => Wallpaper.updateOne(
+    { _id: wallpaper._id },
+    { $pull: { likes: userId }, $inc: { likesCount: -1 } }
+  )));
+
+  await Promise.all([
+    Comment.updateMany({ authorId: userId }, { $set: { status: 'deleted', text: '[deleted]', authorId: null, authorName: 'deleted' } }),
+    Playlist.deleteMany({ creatorId: userId }),
+    Playlist.updateMany({ contributors: userId }, { $pull: { contributors: userId } }),
+    User.updateMany({ following: userId }, { $pull: { following: userId } }),
+    User.updateMany({ mutedUsers: userId }, { $pull: { mutedUsers: userId } }),
+    Notification.deleteMany({ userId }),
+    SavedSearch.deleteMany({ userId }),
+    AuthToken.deleteMany({ userId }),
+    ApiKey.deleteMany({ userId }),
+    DownloadHistory.deleteMany({ userId }),
+    Report.deleteMany({ reporterId: userId }),
+    Report.deleteMany({ targetType: 'user', targetId: userId }),
+    Payment.updateMany({ buyerId: userId }, { $set: { buyerId: null } })
+  ]);
+  await User.deleteOne({ _id: userId });
+
+  res.status(200).json({ message: 'Your account has been deleted.' });
+});
+
 module.exports = {
+  getLeaderboard,
+  updatePreferences,
+  toggleFollowTag,
+  toggleMuteTag,
+  toggleMuteUser,
+  getMutedUsers,
+  getDownloads,
+  clearDownloads,
+  removeDownload,
+  exportMyData,
+  deleteMyAccount,
   toggleFollowUser,
   getFollowing,
   updateAvatar,

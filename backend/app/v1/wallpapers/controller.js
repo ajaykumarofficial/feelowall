@@ -1,512 +1,629 @@
-const { Wallpaper } = require('../../../databaseModels');
+const path = require('path');
+const fs = require('fs');
+const mongoose = require('mongoose');
+const { Wallpaper, User, DailyAnalytics, DownloadHistory, Comment, Report } = require('../../../databaseModels');
 const cloudinary = require('../../../helper/cloudinary');
 const { trackHit } = require('../../../helper/analytics');
+const { buildWallpaperFilter, buildSort, parsePaging } = require('../../../helper/wallpaperQuery');
+const { publicFilter, canView, isPublic, isStaff, isOwner } = require('../../../helper/visibility');
+const { parseTags, asString, normalizeTag, escapeRegex } = require('../../../helper/text');
+const { isAllowedMediaUrl, isSafeFilename, UPLOADS_DIR } = require('../../../helper/media');
+const { notify } = require('../../../helper/notifications');
+const { onWallpaperPublished } = require('../../../helper/publishing');
+const { asyncHandler, HttpError } = require('../../../helper/asyncHandler');
 
-/**
- * Get all wallpapers (with category, search, sort & pagination)
- */
-const hexToRgb = (hex) => {
-  if (!hex) return null;
-  const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
-  const fullHex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(fullHex);
-  return result ? {
-    r: parseInt(result[1], 16),
-    g: parseInt(result[2], 16),
-    b: parseInt(result[3], 16)
-  } : null;
+const PREFERENCE_FIELDS = 'showMature mutedUsers mutedTags followedTags following';
+
+const loadPreferences = (req) => (req.user
+  ? User.findById(req.user.id).select(PREFERENCE_FIELDS).lean()
+  : Promise.resolve(null));
+
+/** A record's "not found" for anything the viewer isn't allowed to see, so hidden items can't be probed. */
+const loadVisible = async (id, user) => {
+  const wallpaper = await Wallpaper.findById(id);
+  if (!wallpaper || !canView(wallpaper, user)) throw new HttpError(404, 'Wallpaper not found.');
+  return wallpaper;
+};
+
+const loadOwned = async (id, user, action = 'update') => {
+  const wallpaper = await Wallpaper.findById(id);
+  if (!wallpaper) throw new HttpError(404, 'Wallpaper not found.');
+  if (!isOwner(wallpaper, user)) throw new HttpError(403, `You are not authorized to ${action} this wallpaper.`);
+  return wallpaper;
 };
 
 /**
  * Get all wallpapers (with category, search, sort & pagination)
  */
-const getWallpapers = async (req, res) => {
-  try {
-    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=3600, stale-while-revalidate=600');
-    const { category, search, sortBy, page, limit, color, colorThreshold } = req.query;
-    const query = {};
+const getWallpapers = asyncHandler(async (req, res) => {
+  // Personalised results must not be stored in shared caches, and the browser
+  // must not reuse a signed-out response after logging in.
+  res.setHeader('Vary', 'Authorization');
+  res.setHeader('Cache-Control', req.user
+    ? 'private, no-store'
+    : 'public, max-age=60, s-maxage=3600, stale-while-revalidate=600');
 
-    // Sanitize query inputs to prevent NoSQL injection
-    const categoryString = typeof category === 'string' ? category.replace(/\$[a-zA-Z]+/g, '') : '';
-    const searchString = typeof search === 'string' ? search.replace(/\$[a-zA-Z]+/g, '') : '';
+  const preferences = await loadPreferences(req);
+  const filter = buildWallpaperFilter(req.query, preferences);
+  const { page, limit, skip } = parsePaging(req.query);
 
-    if (categoryString && categoryString !== 'All') {
-      query.category = { $regex: new RegExp('^' + categoryString + '$', 'i') };
-    }
+  const [wallpapers, total] = await Promise.all([
+    Wallpaper.find(filter).sort(buildSort(req.query.sortBy)).skip(skip).limit(limit).lean(),
+    Wallpaper.countDocuments(filter)
+  ]);
 
-    if (searchString) {
-      const searchQuery = { $regex: new RegExp(searchString, 'i') };
-      query.$or = [
-        { title: searchQuery },
-        { category: searchQuery },
-        { uploadedBy: searchQuery },
-        { tags: searchQuery }
-      ];
-    }
-
-    if (color) {
-      const rgb = hexToRgb(color);
-      if (rgb) {
-        const threshold = parseInt(colorThreshold) || 45;
-        query.colors = {
-          $elemMatch: {
-            r: { $gte: rgb.r - threshold, $lte: rgb.r + threshold },
-            g: { $gte: rgb.g - threshold, $lte: rgb.g + threshold },
-            b: { $gte: rgb.b - threshold, $lte: rgb.b + threshold }
-          }
-        };
-      }
-    }
-
-    // Sort option
-    let sortOption = { uploadedAt: -1 };
-    if (sortBy === 'likes') {
-      sortOption = { likesCount: -1, uploadedAt: -1 };
-    } else if (sortBy === 'downloads') {
-      sortOption = { downloadsCount: -1, uploadedAt: -1 };
-    } else if (sortBy === 'views') {
-      sortOption = { viewsCount: -1, uploadedAt: -1 };
-    }
-
-    // Pagination
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 0; // 0 = no limit (backward-compatible)
-
-    let wallpapersQuery = Wallpaper.find(query).sort(sortOption);
-
-    if (limitNum > 0) {
-      const skip = (pageNum - 1) * limitNum;
-      wallpapersQuery = wallpapersQuery.skip(skip).limit(limitNum);
-    }
-
-    const [wallpapers, total] = await Promise.all([
-      wallpapersQuery.lean(),
-      Wallpaper.countDocuments(query)
-    ]);
-
-    const hasMore = limitNum > 0
-      ? pageNum * limitNum < total
-      : false;
-
-    res.status(200).json({ wallpapers, hasMore, total, page: pageNum });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error retrieving wallpapers.', error: error.message });
-  }
-};
+  res.status(200).json({ wallpapers, hasMore: page * limit < total, total, page });
+});
 
 /**
  * Handle custom wallpaper uploads
  */
-const uploadWallpaper = async (req, res) => {
-  try {
-    const { title, category, imageUrl, filename, colors, isLive, videoUrl, tags } = req.body;
+const uploadWallpaper = asyncHandler(async (req, res) => {
+  const {
+    title, category, imageUrl, filename, colors, isLive, videoUrl, tags,
+    license, sourceUrl, altText, isMature, status, scheduledAt
+  } = req.body;
 
-    let parsedTags = [];
-    if (Array.isArray(tags)) {
-      parsedTags = tags.map(t => typeof t === 'string' ? t.trim() : '').filter(Boolean);
-    } else if (typeof tags === 'string') {
-      parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
-    }
+  const finalStatus = status || 'published';
+  const now = new Date();
 
-    const newWallpaper = new Wallpaper({
-      title,
-      category,
-      imageUrl,
-      filename,
-      colors: colors || [],
-      isLive: !!isLive,
-      videoUrl: videoUrl || '',
-      tags: parsedTags,
-      uploadedBy: req.user.username,
-      uploadedById: req.user.id
-    });
-    await newWallpaper.save();
+  const newWallpaper = new Wallpaper({
+    title,
+    category,
+    imageUrl,
+    filename,
+    colors: Array.isArray(colors) ? colors : [],
+    isLive: !!isLive,
+    videoUrl: videoUrl || '',
+    tags: parseTags(tags),
+    license: license || 'personal-use',
+    sourceUrl: sourceUrl || '',
+    altText: asString(altText).slice(0, 500),
+    isMature: !!isMature,
+    status: finalStatus,
+    scheduledAt: finalStatus === 'scheduled' ? new Date(scheduledAt) : null,
+    publishedAt: finalStatus === 'published' ? now : null,
+    uploadedBy: req.user.username,
+    uploadedById: req.user.id
+  });
+  await newWallpaper.save();
 
-    // Trigger background image optimization, WebP conversion, and color extraction
-    const { enqueueImageProcess } = require('../../../helper/queue');
-    const path = require('path');
+  // Trigger background image optimization, WebP conversion, and color extraction
+  const { enqueueImageProcess } = require('../../../helper/queue');
 
-    const isCloudinary = imageUrl.startsWith('http') || imageUrl.includes('res.cloudinary.com');
-    const localFilePath = isCloudinary ? '' : path.join(__dirname, '../../../uploads', filename);
+  const isCloudinary = imageUrl.startsWith('http') || imageUrl.includes('res.cloudinary.com');
+  const localFilePath = isCloudinary ? '' : path.join(UPLOADS_DIR, filename);
 
-    enqueueImageProcess({
-      wpId: newWallpaper._id,
-      filePath: localFilePath,
-      imageUrl,
-      isCloudinary,
-      originalFilename: filename
-    }).catch(err => console.error('Background processing enqueuing failed:', err));
+  enqueueImageProcess({
+    wpId: newWallpaper._id,
+    filePath: localFilePath,
+    imageUrl,
+    isCloudinary,
+    originalFilename: filename
+  }).catch(err => console.error('Background processing enqueuing failed:', err));
 
-    res.status(201).json({
-      message: 'Wallpaper uploaded successfully. Processing optimization in background.',
-      wallpaper: newWallpaper
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error during upload.', error: error.message });
-  }
-};
+  if (finalStatus === 'published') await onWallpaperPublished(newWallpaper);
+
+  res.status(201).json({
+    message: finalStatus === 'draft'
+      ? 'Draft saved.'
+      : finalStatus === 'scheduled'
+        ? 'Wallpaper scheduled.'
+        : 'Wallpaper uploaded successfully. Processing optimization in background.',
+    wallpaper: newWallpaper
+  });
+});
 
 /**
  * Update custom wallpaper details
  */
-const updateWallpaper = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, category, tags } = req.body;
+const updateWallpaper = asyncHandler(async (req, res) => {
+  const wp = await loadOwned(req.params.id, req.user);
+  const { title, category, tags, license, sourceUrl, altText, isMature } = req.body;
 
-    const wp = await Wallpaper.findById(id);
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
+  wp.title = title;
+  wp.category = category;
+  if (tags !== undefined) wp.tags = parseTags(tags);
+  if (license !== undefined) wp.license = license;
+  if (sourceUrl !== undefined) wp.sourceUrl = sourceUrl;
+  if (altText !== undefined) wp.altText = asString(altText).slice(0, 500);
+  if (isMature !== undefined) wp.isMature = !!isMature;
+  await wp.save();
 
-    // Check ownership
-    if (wp.uploadedById.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to update this wallpaper.' });
-    }
+  res.status(200).json({
+    message: 'Wallpaper updated successfully.',
+    wallpaper: wp
+  });
+});
 
-    wp.title = title;
-    wp.category = category;
-    if (tags !== undefined) {
-      let parsedTags = [];
-      if (Array.isArray(tags)) {
-        parsedTags = tags.map(t => typeof t === 'string' ? t.trim() : '').filter(Boolean);
-      } else if (typeof tags === 'string') {
-        parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
-      }
-      wp.tags = parsedTags;
-    }
-    await wp.save();
+/**
+ * Publish a draft now, schedule it, or return it to drafts.
+ * Moderated and pack-only wallpapers can't be changed this way.
+ */
+const setPublishState = asyncHandler(async (req, res) => {
+  const wp = await loadOwned(req.params.id, req.user);
+  const { status, scheduledAt } = req.body;
 
-    res.status(200).json({
-      message: 'Wallpaper updated successfully.',
-      wallpaper: wp
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error during update.', error: error.message });
+  if (!['draft', 'scheduled', 'published'].includes(wp.status || 'published')) {
+    throw new HttpError(403, 'This wallpaper can\'t be changed right now.');
   }
+  if (!['draft', 'scheduled', 'published'].includes(status)) {
+    throw new HttpError(400, 'Status must be draft, scheduled, or published.');
+  }
+
+  const wasPublic = isPublic(wp);
+  const now = new Date();
+
+  if (status === 'scheduled') {
+    const when = new Date(scheduledAt);
+    if (Number.isNaN(when.getTime()) || when <= now) throw new HttpError(400, 'Choose a publish time in the future.');
+    wp.scheduledAt = when;
+  } else {
+    wp.scheduledAt = null;
+  }
+  if (status === 'published' && !wasPublic) {
+    wp.publishedAt = now;
+    wp.uploadedAt = now;
+  }
+  wp.status = status;
+  await wp.save();
+
+  if (status === 'published' && !wasPublic) await onWallpaperPublished(wp);
+
+  res.status(200).json({ message: 'Publishing settings saved.', wallpaper: wp });
+});
+
+/** All of the signed-in creator's wallpapers, including drafts and hidden ones. */
+const getMyWallpapers = asyncHandler(async (req, res) => {
+  const filter = { uploadedById: req.user.id, status: { $ne: 'removed' } };
+  if (['draft', 'scheduled', 'published', 'hidden', 'pack-only'].includes(req.query.status)) {
+    filter.status = req.query.status;
+  }
+  const wallpapers = await Wallpaper.find(filter).sort({ uploadedAt: -1 }).limit(500).lean();
+  res.status(200).json({ wallpapers });
+});
+
+const removeStoredFile = async (imageUrl, filename) => {
+  const isRemote = String(imageUrl).startsWith('http') || String(imageUrl).includes('res.cloudinary.com');
+  if (isRemote) {
+    if (cloudinary.isConfigured()) {
+      try {
+        await cloudinary.deleteFromCloudinary(filename);
+      } catch (cloudErr) {
+        // Don't block DB deletion if Cloudinary fails (e.g. invalid public_id or credentials)
+        console.error('Cloudinary deletion failed:', cloudErr.message);
+      }
+    }
+    return;
+  }
+  // Records from before filename validation could hold a path, so only ever delete inside uploads.
+  const filePath = path.join(UPLOADS_DIR, path.basename(String(filename)));
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+};
+
+/** Delete a wallpaper, its files, and the records that hang off it. */
+const destroyWallpaper = async (wp) => {
+  await removeStoredFile(wp.imageUrl, wp.filename);
+  for (const variant of wp.variants || []) await removeStoredFile(variant.imageUrl, variant.filename);
+
+  const comments = await Comment.find({ wallpaperId: wp._id }).select('_id').lean();
+  await Promise.all([
+    Comment.deleteMany({ wallpaperId: wp._id }),
+    Report.deleteMany({ targetType: 'comment', targetId: { $in: comments.map((c) => c._id) } }),
+    DownloadHistory.deleteMany({ wallpaperId: wp._id }),
+    Report.deleteMany({ targetType: 'wallpaper', targetId: wp._id }),
+    DailyAnalytics.deleteMany({ wallpaperId: wp._id }),
+    Wallpaper.deleteOne({ _id: wp._id })
+  ]);
 };
 
 /**
  * Delete custom wallpaper and physical file
  */
-const deleteWallpaper = async (req, res) => {
-  const fs = require('fs');
-  const path = require('path');
-  try {
-    const { id } = req.params;
-
-    const wp = await Wallpaper.findById(id);
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
-
-    // Check ownership
-    if (wp.uploadedById.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to delete this wallpaper.' });
-    }
-
-    // Check if the image was uploaded via Cloudinary
-    const isCloudinary = wp.imageUrl.startsWith('http') || wp.imageUrl.includes('res.cloudinary.com');
-
-    if (isCloudinary) {
-      // Delete from Cloudinary
-      if (cloudinary.isConfigured()) {
-        try {
-          await cloudinary.deleteFromCloudinary(wp.filename);
-        } catch (cloudErr) {
-          console.error('Cloudinary deletion failed:', cloudErr.message);
-          // Don't block DB deletion if Cloudinary fails (e.g. invalid public_id or credentials)
-        }
-      }
-    } else {
-      // Delete physical file from local disk
-      const filePath = path.join(__dirname, '../../../uploads', wp.filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-
-    // Delete from DB
-    await Wallpaper.deleteOne({ _id: id });
-
-    res.status(200).json({
-      message: 'Wallpaper deleted successfully.'
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error during deletion.', error: error.message });
+const deleteWallpaper = asyncHandler(async (req, res) => {
+  const wp = await loadOwned(req.params.id, req.user, 'delete');
+  if (wp.status === 'pack-only') {
+    throw new HttpError(400, 'This wallpaper is part of a pack. Remove it from sale first.');
   }
-};
+  await destroyWallpaper(wp);
+  res.status(200).json({
+    message: 'Wallpaper deleted successfully.'
+  });
+});
 
 /**
  * Toggle like for a wallpaper
  */
-const toggleLikeWallpaper = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
+const toggleLikeWallpaper = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
 
-    const wp = await Wallpaper.findById(id);
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
+  const wp = await loadVisible(id, req.user);
 
-    // Ensure likes array exists (safeguard)
-    if (!wp.likes) wp.likes = [];
+  // Ensure likes array exists (safeguard)
+  if (!wp.likes) wp.likes = [];
 
-    const index = wp.likes.indexOf(userId);
-    let liked = false;
+  const index = wp.likes.indexOf(userId);
+  const liked = index === -1;
+  if (liked) wp.likes.push(userId);
+  else wp.likes.splice(index, 1);
 
-    if (index > -1) {
-      // Already liked, so unlike it
-      wp.likes.splice(index, 1);
-      liked = false;
-    } else {
-      // Like it
-      wp.likes.push(userId);
-      liked = true;
-    }
+  wp.likesCount = wp.likes.length;
+  await wp.save();
 
-    wp.likesCount = wp.likes.length;
-    await wp.save();
+  // Track analytics hit asynchronously
+  trackHit(id, 'likes', liked ? 1 : -1);
 
-    // Track analytics hit asynchronously
-    trackHit(id, 'likes', liked ? 1 : -1);
-
-    res.status(200).json({
-      message: liked ? 'Wallpaper liked.' : 'Wallpaper unliked.',
-      liked,
-      likesCount: wp.likesCount
+  if (liked) {
+    await notify({
+      userId: wp.uploadedById,
+      type: 'like',
+      actorId: userId,
+      actorName: req.user.username,
+      text: `liked "${wp.title}"`,
+      link: `/wallpaper/${wp._id}`,
+      groupKey: `like:${wp._id}`
     });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error toggling like.', error: error.message });
   }
-};
+
+  res.status(200).json({
+    message: liked ? 'Wallpaper liked.' : 'Wallpaper unliked.',
+    liked,
+    likesCount: wp.likesCount
+  });
+});
 
 /**
  * Increment view count for a wallpaper
  */
-const incrementViews = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const wp = await Wallpaper.findByIdAndUpdate(
-      id,
-      { $inc: { viewsCount: 1 } },
-      { new: true }
-    );
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
-    // Track views analytics asynchronously
-    trackHit(id, 'views', 1);
-    res.status(200).json({ viewsCount: wp.viewsCount });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error incrementing view count.', error: error.message });
+const incrementViews = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const wp = await Wallpaper.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } }, { new: true });
+  if (!wp) {
+    return res.status(404).json({ message: 'Wallpaper not found.' });
   }
-};
+  // Track views analytics asynchronously
+  trackHit(id, 'views', 1);
+  res.status(200).json({ viewsCount: wp.viewsCount });
+});
 
 /**
- * Increment download count for a wallpaper
+ * Increment download count for a wallpaper, and add it to the user's history if signed in
  */
-const incrementDownloads = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const wp = await Wallpaper.findByIdAndUpdate(
-      id,
-      { $inc: { downloadsCount: 1 } },
-      { new: true }
+const incrementDownloads = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const wp = await Wallpaper.findByIdAndUpdate(id, { $inc: { downloadsCount: 1 } }, { new: true });
+  if (!wp) {
+    return res.status(404).json({ message: 'Wallpaper not found.' });
+  }
+  // Track downloads analytics asynchronously
+  trackHit(id, 'downloads', 1);
+  if (req.user) {
+    await DownloadHistory.findOneAndUpdate(
+      { userId: req.user.id, wallpaperId: wp._id },
+      { $set: { downloadedAt: new Date() } },
+      { upsert: true }
     );
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
-    // Track downloads analytics asynchronously
-    trackHit(id, 'downloads', 1);
-    res.status(200).json({ downloadsCount: wp.downloadsCount });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error incrementing download count.', error: error.message });
   }
-};
+  res.status(200).json({ downloadsCount: wp.downloadsCount });
+});
 
-const getFeed = async (req, res) => {
-  try {
-    const { page, limit } = req.query;
-    const currentUserId = req.user.id;
+/** Latest uploads from followed creators and followed tags. */
+const getFeed = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user.id).select(PREFERENCE_FIELDS).lean();
+  const following = user?.following || [];
+  const followedTags = user?.followedTags || [];
 
-    const { User } = require('../../../databaseModels');
-    const user = await User.findById(currentUserId);
-    if (!user || !user.following || user.following.length === 0) {
-      return res.status(200).json({ wallpapers: [], hasMore: false, total: 0, page: 1 });
-    }
-
-    const query = { uploadedById: { $in: user.following } };
-
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 12;
-    const skip = (pageNum - 1) * limitNum;
-
-    const [wallpapers, total] = await Promise.all([
-      Wallpaper.find(query).sort({ uploadedAt: -1 }).skip(skip).limit(limitNum).lean(),
-      Wallpaper.countDocuments(query)
-    ]);
-
-    const hasMore = pageNum * limitNum < total;
-
-    res.status(200).json({ wallpapers, hasMore, total, page: pageNum });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error retrieving feed.', error: error.message });
+  if (!following.length && !followedTags.length) {
+    return res.status(200).json({ wallpapers: [], hasMore: false, total: 0, page: 1 });
   }
-};
+
+  const sources = [];
+  if (following.length) sources.push({ uploadedById: { $in: following } });
+  if (followedTags.length) sources.push({ tags: { $in: followedTags } });
+
+  const filter = buildWallpaperFilter({}, user);
+  filter.$and.push({ $or: sources });
+  filter.$and.push({ uploadedById: { $ne: req.user.id } });
+
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const { limit, skip } = parsePaging({ page, limit: req.query.limit || 12 });
+
+  const [wallpapers, total] = await Promise.all([
+    Wallpaper.find(filter).sort({ uploadedAt: -1 }).skip(skip).limit(limit).lean(),
+    Wallpaper.countDocuments(filter)
+  ]);
+
+  res.status(200).json({ wallpapers, hasMore: page * limit < total, total, page });
+});
 
 /**
  * Retrieve a list of featured wallpapers
  */
-const getFeaturedWallpapers = async (req, res) => {
-  try {
-    const featured = await Wallpaper.find({ isFeatured: true })
-      .sort({ featuredAt: -1 })
-      .limit(5)
-      .lean();
-    res.status(200).json(featured);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error retrieving featured wallpapers.', error: error.message });
-  }
-};
+const getFeaturedWallpapers = asyncHandler(async (req, res) => {
+  const featured = await Wallpaper.find({ isFeatured: true, ...publicFilter(), isMature: { $ne: true } })
+    .sort({ featuredAt: -1 })
+    .limit(5)
+    .lean();
+  res.status(200).json(featured);
+});
 
 /**
- * Toggle featured status of a wallpaper (Owner-only)
+ * Toggle featured status of a wallpaper (admins only, so the showcase stays curated)
  */
-const toggleFeatureWallpaper = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const wp = await Wallpaper.findById(id);
-    if (!wp) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
-
-    // Check ownership
-    if (wp.uploadedById.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'You are not authorized to feature this wallpaper.' });
-    }
-
-    // Toggle featured status
-    wp.isFeatured = !wp.isFeatured;
-    wp.featuredAt = wp.isFeatured ? new Date() : null;
-    await wp.save();
-
-    res.status(200).json({
-      message: wp.isFeatured ? 'Wallpaper marked as featured.' : 'Wallpaper removed from featured.',
-      isFeatured: wp.isFeatured,
-      wallpaper: wp
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error toggling featured status.', error: error.message });
+const toggleFeatureWallpaper = asyncHandler(async (req, res) => {
+  const wp = await Wallpaper.findById(req.params.id);
+  if (!wp) {
+    return res.status(404).json({ message: 'Wallpaper not found.' });
   }
-};
+
+  wp.isFeatured = !wp.isFeatured;
+  wp.featuredAt = wp.isFeatured ? new Date() : null;
+  await wp.save();
+
+  if (wp.isFeatured) {
+    await notify({
+      userId: wp.uploadedById,
+      type: 'featured',
+      text: `Your wallpaper "${wp.title}" is now featured!`,
+      link: `/wallpaper/${wp._id}`
+    });
+  }
+
+  res.status(200).json({
+    message: wp.isFeatured ? 'Wallpaper marked as featured.' : 'Wallpaper removed from featured.',
+    isFeatured: wp.isFeatured,
+    wallpaper: wp
+  });
+});
 
 /**
  * Get a single wallpaper by ID
  */
-const getWallpaperById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const wallpaper = await Wallpaper.findById(id);
-    if (!wallpaper) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
-    res.status(200).json(wallpaper);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error retrieving wallpaper.', error: error.message });
-  }
+const getWallpaperById = asyncHandler(async (req, res) => {
+  const wallpaper = await loadVisible(req.params.id, req.user);
+  res.status(200).json(wallpaper);
+});
+
+const MAX_SIMILAR_CANDIDATES = 500;
+
+/** Chamfer distance between two palettes: lower means more alike. */
+const paletteDistance = (first, second) => {
+  if (!first?.length || !second?.length) return 441.67; // Max possible Euclidean distance in RGB space
+  const oneWay = (from, to) => from.reduce((sum, a) => sum + Math.min(...to.map((b) => Math.sqrt(
+    ((a.r || 0) - (b.r || 0)) ** 2 +
+    ((a.g || 0) - (b.g || 0)) ** 2 +
+    ((a.b || 0) - (b.b || 0)) ** 2
+  ))), 0) / from.length;
+  return (oneWay(first, second) + oneWay(second, first)) / 2;
 };
 
 /**
  * Suggest similar wallpapers using color distance matching and tags/category overlap
  */
-const getSimilarWallpapers = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const target = await Wallpaper.findById(id);
-    if (!target) {
-      return res.status(404).json({ message: 'Wallpaper not found.' });
-    }
+const getSimilarWallpapers = asyncHandler(async (req, res) => {
+  const target = await loadVisible(req.params.id, req.user);
+  const preferences = await loadPreferences(req);
 
-    // Chamfer distance calculation helper between target palette T and candidate palette C
-    const getPaletteDistance = (tPalette, cPalette) => {
-      if (!tPalette || tPalette.length === 0 || !cPalette || cPalette.length === 0) {
-        return 441.67; // Max possible Euclidean distance in RGB space
-      }
+  const filter = buildWallpaperFilter({}, preferences);
+  filter.$and.push({ _id: { $ne: target._id } });
 
-      const getMinDistance = (p1, p2) => {
-        let sum = 0;
-        for (const c1 of p1) {
-          let minD = Infinity;
-          for (const c2 of p2) {
-            const d = Math.sqrt(
-              Math.pow((c1.r || 0) - (c2.r || 0), 2) +
-              Math.pow((c1.g || 0) - (c2.g || 0), 2) +
-              Math.pow((c1.b || 0) - (c2.b || 0), 2)
-            );
-            if (d < minD) minD = d;
-          }
-          sum += minD;
-        }
-        return sum / p1.length;
-      };
+  // Score a bounded set of the newest wallpapers rather than the whole collection.
+  const candidates = await Wallpaper.find(filter)
+    .sort({ uploadedAt: -1 })
+    .limit(MAX_SIMILAR_CANDIDATES)
+    .select('-likes')
+    .lean();
 
-      const d1 = getMinDistance(tPalette, cPalette);
-      const d2 = getMinDistance(cPalette, tPalette);
-      return (d1 + d2) / 2;
-    };
+  const targetCategory = String(target.category || '').toLowerCase();
+  const targetTags = target.tags || [];
 
-    // Fetch other wallpapers
-    const candidates = await Wallpaper.find({ _id: { $ne: target._id } }).lean();
+  const scored = candidates.map((candidate) => {
+    let bonus = 0;
+    if (targetCategory && targetCategory === String(candidate.category || '').toLowerCase()) bonus += 30;
+    bonus += (candidate.tags || []).filter((tag) => targetTags.includes(tag)).length * 15;
+    return { ...candidate, similarityScore: paletteDistance(target.colors, candidate.colors) - bonus };
+  });
 
-    const scoredCandidates = candidates.map(candidate => {
-      let colorDist = getPaletteDistance(target.colors, candidate.colors);
+  scored.sort((a, b) => a.similarityScore - b.similarityScore);
+  res.status(200).json(scored.slice(0, 6));
+});
 
-      // Category match bonus: subtract 30 from score
-      let bonus = 0;
-      if (target.category && candidate.category && target.category.toLowerCase() === candidate.category.toLowerCase()) {
-        bonus += 30;
-      }
+/** Popular tags, optionally narrowed by what's been typed so far. */
+const getTags = asyncHandler(async (req, res) => {
+  const query = asString(req.query.q).toLowerCase();
+  const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
 
-      // Tag match bonus: subtract 15 per matching tag
-      if (target.tags && candidate.tags && Array.isArray(target.tags) && Array.isArray(candidate.tags)) {
-        const matchingTags = candidate.tags.filter(t => target.tags.includes(t));
-        bonus += matchingTags.length * 15;
-      }
+  const pipeline = [
+    { $match: publicFilter() },
+    { $unwind: '$tags' },
+    { $project: { tag: { $toLower: '$tags' } } }
+  ];
+  if (query) pipeline.push({ $match: { tag: { $regex: `^${escapeRegex(normalizeTag(query))}` } } });
+  pipeline.push(
+    { $group: { _id: '$tag', count: { $sum: 1 } } },
+    { $sort: { count: -1, _id: 1 } },
+    { $limit: limit }
+  );
 
-      const finalScore = colorDist - bonus;
+  const rows = await Wallpaper.aggregate(pipeline);
+  res.status(200).json({ tags: rows.map((row) => ({ tag: row._id, count: row.count })) });
+});
 
-      return {
-        ...candidate,
-        similarityScore: finalScore
-      };
-    });
+/** The signed-in user's likes, newest first. */
+const getLikedWallpapers = asyncHandler(async (req, res) => {
+  const { page, limit, skip } = parsePaging(req.query);
+  const filter = { likes: req.user.id, ...publicFilter() };
+  const [wallpapers, total] = await Promise.all([
+    Wallpaper.find(filter).sort({ uploadedAt: -1 }).skip(skip).limit(limit).select('-likes').lean(),
+    Wallpaper.countDocuments(filter)
+  ]);
+  res.status(200).json({ wallpapers, hasMore: page * limit < total, total, page });
+});
 
-    // Sort ascending by score (lower score = higher similarity)
-    scoredCandidates.sort((a, b) => a.similarityScore - b.similarityScore);
+/**
+ * Personal recommendations. Builds a profile from what the user has liked and
+ * follows, then scores recent wallpapers against it. Falls back to trending for
+ * new users with nothing to learn from.
+ */
+const getForYou = asyncHandler(async (req, res) => {
+  const { page, limit, skip } = parsePaging({ page: req.query.page, limit: req.query.limit || 24 });
+  const user = await User.findById(req.user.id).select(PREFERENCE_FIELDS).lean();
 
-    // Return the top 6 most similar wallpapers
-    const topSimilar = scoredCandidates.slice(0, 6);
+  const liked = await Wallpaper.find({ likes: req.user.id })
+    .sort({ uploadedAt: -1 })
+    .limit(200)
+    .select('category tags colors')
+    .lean();
 
-    res.status(200).json(topSimilar);
-  } catch (error) {
-    res.status(500).json({ message: 'Server error retrieving similar wallpapers.', error: error.message });
+  const filter = buildWallpaperFilter({}, user);
+  filter.$and.push({ uploadedById: { $ne: req.user.id } }, { likes: { $ne: req.user.id } });
+
+  if (!liked.length && !user?.following?.length && !user?.followedTags?.length) {
+    const [wallpapers, total] = await Promise.all([
+      Wallpaper.find(filter).sort(buildSort('trending')).skip(skip).limit(limit).lean(),
+      Wallpaper.countDocuments(filter)
+    ]);
+    return res.status(200).json({ wallpapers, hasMore: page * limit < total, total, page, personalized: false });
   }
-};
+
+  const categoryWeights = {};
+  const tagWeights = {};
+  for (const tag of user?.followedTags || []) tagWeights[tag] = 3;
+  for (const item of liked) {
+    const category = String(item.category || '').toLowerCase();
+    if (category) categoryWeights[category] = (categoryWeights[category] || 0) + 1;
+    for (const tag of item.tags || []) {
+      const key = String(tag).toLowerCase();
+      tagWeights[key] = (tagWeights[key] || 0) + 1;
+    }
+  }
+  const palette = liked.flatMap((item) => item.colors || []).slice(0, 60);
+  const followed = new Set((user?.following || []).map(String));
+
+  const candidates = await Wallpaper.find(filter)
+    .sort({ uploadedAt: -1 })
+    .limit(MAX_SIMILAR_CANDIDATES)
+    .lean();
+
+  const scored = candidates.map((candidate) => {
+    let score = (categoryWeights[String(candidate.category || '').toLowerCase()] || 0) * 2;
+    for (const tag of candidate.tags || []) score += tagWeights[String(tag).toLowerCase()] || 0;
+    if (followed.has(String(candidate.uploadedById))) score += 8;
+    if (palette.length && candidate.colors?.length) score += Math.max(0, 6 - paletteDistance(candidate.colors, palette) / 25);
+    score += Math.min(candidate.trendingScore || 0, 50) / 25;
+    return { candidate, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+
+  res.status(200).json({
+    wallpapers: scored.slice(skip, skip + limit).map((row) => row.candidate),
+    hasMore: skip + limit < scored.length,
+    total: scored.length,
+    page,
+    personalized: true
+  });
+});
+
+/** Daily stats for one wallpaper, for its owner or staff. */
+const getWallpaperAnalytics = asyncHandler(async (req, res) => {
+  const wp = await Wallpaper.findById(req.params.id).lean();
+  if (!wp) throw new HttpError(404, 'Wallpaper not found.');
+  if (!isOwner(wp, req.user) && !isStaff(req.user)) {
+    throw new HttpError(403, 'You can only view analytics for your own wallpapers.');
+  }
+
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - days + 1);
+
+  const rows = await DailyAnalytics.find({
+    wallpaperId: new mongoose.Types.ObjectId(req.params.id),
+    date: { $gte: start }
+  }).lean();
+  const byDate = new Map(rows.map((row) => [new Date(row.date).toISOString().split('T')[0], row]));
+
+  const series = Array.from({ length: days }, (_, index) => {
+    const day = new Date(start);
+    day.setUTCDate(day.getUTCDate() + index);
+    const date = day.toISOString().split('T')[0];
+    const row = byDate.get(date) || {};
+    return { date, views: row.views || 0, downloads: row.downloads || 0, likes: row.likes || 0 };
+  });
+
+  const period = series.reduce((sum, day) => ({
+    views: sum.views + day.views,
+    downloads: sum.downloads + day.downloads,
+    likes: sum.likes + day.likes
+  }), { views: 0, downloads: 0, likes: 0 });
+
+  res.status(200).json({
+    wallpaper: { id: wp._id, title: wp.title },
+    totals: { views: wp.viewsCount || 0, downloads: wp.downloadsCount || 0, likes: wp.likesCount || 0 },
+    period: { ...period, downloadRate: period.views ? Math.round((period.downloads / period.views) * 1000) / 10 : 0 },
+    series
+  });
+});
+
+// ─── Variants ────────────────────────────────────────────────
+
+const VARIANT_LABELS = ['desktop', 'mobile', 'tablet', 'ultrawide', 'light', 'dark'];
+
+const addVariant = asyncHandler(async (req, res) => {
+  const wp = await loadOwned(req.params.id, req.user);
+  const { label, imageUrl, filename, width, height } = req.body;
+
+  if (!VARIANT_LABELS.includes(label)) throw new HttpError(400, 'Please choose a valid variant type.');
+  if (!isAllowedMediaUrl(imageUrl) || !isSafeFilename(filename, imageUrl)) {
+    throw new HttpError(400, 'The image must be uploaded through FeeloWall.');
+  }
+  if ((wp.variants || []).some((variant) => variant.label === label)) {
+    throw new HttpError(400, `This wallpaper already has a ${label} version.`);
+  }
+
+  wp.variants.push({
+    label,
+    imageUrl,
+    filename,
+    width: Number(width) > 0 ? Number(width) : null,
+    height: Number(height) > 0 ? Number(height) : null
+  });
+  await wp.save();
+  res.status(201).json({ message: 'Variant added.', variants: wp.variants });
+});
+
+const deleteVariant = asyncHandler(async (req, res) => {
+  const wp = await loadOwned(req.params.id, req.user);
+  const variant = wp.variants.id(req.params.variantId);
+  if (!variant) throw new HttpError(404, 'Variant not found.');
+
+  await removeStoredFile(variant.imageUrl, variant.filename);
+  variant.deleteOne();
+  await wp.save();
+  res.status(200).json({ message: 'Variant removed.', variants: wp.variants });
+});
 
 module.exports = {
   getWallpapers,
   getWallpaperById,
   uploadWallpaper,
   updateWallpaper,
+  setPublishState,
+  getMyWallpapers,
   deleteWallpaper,
+  destroyWallpaper,
   toggleLikeWallpaper,
   incrementViews,
   incrementDownloads,
   getFeed,
   getFeaturedWallpapers,
   toggleFeatureWallpaper,
-  getSimilarWallpapers
+  getSimilarWallpapers,
+  getTags,
+  getForYou,
+  getLikedWallpapers,
+  getWallpaperAnalytics,
+  addVariant,
+  deleteVariant
 };
-

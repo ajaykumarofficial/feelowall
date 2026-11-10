@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "FeeloWall New Tab",
+  "version": "1.0.0",
+  "description": "Show a FeeloWall wallpaper every time you open a new tab.",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["storage"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

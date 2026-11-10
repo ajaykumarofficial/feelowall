@@ -7,10 +7,15 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "seed": "node seed.js",
-    "test": "jest --runInBand --detectOpenHandles"
+    "test": "jest --runInBand --detectOpenHandles",
+    "make-admin": "node scripts/make-admin.js",
+    "db:backup": "node scripts/db-backup.js",
+    "db:restore": "node scripts/db-restore.js",
+    "backfill:images": "node scripts/backfill-images.js"
   },
   "dependencies": {
-    "archiver": "^8.0.0",
+    "@anthropic-ai/sdk": "^1.6.0",
+    "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.79.1",
     "cloudinary": "^2.2.0",

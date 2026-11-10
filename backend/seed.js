@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const config = require('./config');
 const { hashPassword } = require('./helper/bcrypt');
-const { User, Wallpaper, clearDb, closeDb } = require('./databaseModels');
+const { User, Wallpaper, clearDb, closeDb, isTestDatabaseName } = require('./databaseModels');
 
 const wallpapersData = [
   {
@@ -135,8 +135,20 @@ async function seed() {
     }
     console.log('Connected to MongoDB.');
 
+    // Seeding deletes everything first, so a real database needs an explicit, named confirmation.
+    await mongoose.connection.asPromise();
+    const dbName = mongoose.connection.name;
+    const confirmed = process.argv.includes(`--confirm-delete-all-data-in=${dbName}`);
+    if (!isTestDatabaseName(dbName) && !confirmed) {
+      console.error(`\nRefusing to seed: this would DELETE ALL DATA in the "${dbName}" database.`);
+      console.error('Point MONGODB_URI at a throwaway database whose name ends in "_test", or, if you are sure:');
+      console.error(`  npm run seed -- --confirm-delete-all-data-in=${dbName}\n`);
+      await closeDb();
+      process.exit(1);
+    }
+
     // Clear existing data
-    await clearDb();
+    await clearDb({ allowNonTest: confirmed });
     console.log('Database cleared.');
 
     // Create demo user

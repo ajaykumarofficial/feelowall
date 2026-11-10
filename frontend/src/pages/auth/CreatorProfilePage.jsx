@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
+import { Rss } from 'lucide-react';
+import { API_BASE, mediaUrl } from '../../services/platformService';
+import { VerifiedBadge, activatable } from '../../components/ui';
+import { SafetyActions, TipButton } from '../wallpapers/WallpaperExtras';
 import { useAuth } from './useAuth';
 import { motion } from 'framer-motion';
 
@@ -21,6 +25,14 @@ const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const CreatorProfilePage = ({ username, onZoom, onLike, showToast, onEdit, onDelete }) => {
   const { username: paramUsername } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get('tip') === 'thanks') {
+      if (showToast) showToast('Thanks for supporting this creator!', 'success');
+      setSearchParams({}, { replace: true });
+    }
+  }, []);
   const activeUsername = username || paramUsername;
   const { user } = useAuth();
   const [creator, setCreator] = useState(null);
@@ -182,6 +194,13 @@ export const CreatorProfilePage = ({ username, onZoom, onLike, showToast, onEdit
               <p style={{ margin: '0.5rem 0 0.8rem 0', color: 'var(--text-muted)', fontSize: '0.95rem', maxWidth: '500px', lineHeight: '1.5' }}>
                 {creator.bio || "No biography provided. FeeloWall Community Contributor."}
               </p>
+
+              <div className="fw-row fw-spaced">
+                {creator.isVerified && <span className="badge"><VerifiedBadge /> Verified</span>}
+                {creator.acceptsTips && creator.id !== user?.id && <TipButton username={creator.username} showToast={showToast} />}
+                <a className="fw-link fw-muted" href={`${API_BASE}/rss/creator/${encodeURIComponent(creator.username)}`} target="_blank" rel="noreferrer"><Rss size={13} aria-hidden="true" /> RSS</a>
+                {creator.id !== user?.id && <SafetyActions targetType="user" targetId={creator.id} label={creator.username} username={creator.username} showToast={showToast} />}
+              </div>
               
               <div style={{ display: 'flex', gap: '1.2rem', flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                 <span><strong>{creator.stats.followersCount}</strong> Followers</span>
@@ -377,9 +396,11 @@ export const CreatorProfilePage = ({ username, onZoom, onLike, showToast, onEdit
                     key={wp._id || wp.id}
                     className="wallpaper-card"
                     onClick={() => onZoom(wp)}
+                    {...activatable(() => onZoom(wp))}
+                    aria-label={wp.title}
                   >
                     <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                      <img src={imgSource} alt={wp.title} loading="lazy" />
+                      <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                       {wp.isLive && (
                         <span className="live-badge" style={{
                           position: 'absolute',
@@ -504,9 +525,13 @@ export const CreatorProfilePage = ({ username, onZoom, onLike, showToast, onEdit
                   className="wallpaper-card"
                   style={{ cursor: 'pointer' }}
                   onClick={() => window.location.href = `/playlists/${pl._id || pl.id}`}
+                  {...activatable(() => { window.location.href = `/playlists/${pl._id || pl.id}`; })}
+                  aria-label={pl.name}
                 >
                   <div className="card-img-wrapper" style={{ background: 'var(--accent-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '220px' }}>
-                    <Folder size={64} style={{ color: 'var(--accent)', opacity: 0.8 }} />
+                    {pl.coverWallpaperId?.imageUrl
+                      ? <img src={mediaUrl(pl.coverWallpaperId.imageUrl)} alt="" loading="lazy" />
+                      : <Folder size={64} style={{ color: 'var(--accent)', opacity: 0.8 }} />}
                   </div>
                   <div className="card-overlay" style={{ opacity: 1, background: 'rgba(0,0,0,0.6)' }}>
                     <h4 className="card-title">{pl.name}</h4>

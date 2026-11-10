@@ -4,6 +4,18 @@ const UserSchema = require('./User/schema');
 const WallpaperSchema = require('./Wallpaper/schema');
 const PlaylistSchema = require('./Playlist/schema');
 const DailyAnalyticsSchema = require('./DailyAnalytics/schema');
+const ReportSchema = require('./Report/schema');
+const CommentSchema = require('./Comment/schema');
+const NotificationSchema = require('./Notification/schema');
+const ChallengeSchema = require('./Challenge/schema');
+const ChallengeSubmissionSchema = require('./ChallengeSubmission/schema');
+const ChallengeVoteSchema = require('./ChallengeVote/schema');
+const SavedSearchSchema = require('./SavedSearch/schema');
+const AuthTokenSchema = require('./AuthToken/schema');
+const PaymentSchema = require('./Payment/schema');
+const PackSchema = require('./Pack/schema');
+const ApiKeySchema = require('./ApiKey/schema');
+const DownloadHistorySchema = require('./DownloadHistory/schema');
 
 let MONGODB_URI = config.MONGODB_URI;
 
@@ -40,12 +52,39 @@ const User = mongoose.model('User', UserSchema);
 const Wallpaper = mongoose.model('Wallpaper', WallpaperSchema);
 const Playlist = mongoose.model('Playlist', PlaylistSchema);
 const DailyAnalytics = mongoose.model('DailyAnalytics', DailyAnalyticsSchema);
+const Report = mongoose.model('Report', ReportSchema);
+const Comment = mongoose.model('Comment', CommentSchema);
+const Notification = mongoose.model('Notification', NotificationSchema);
+const Challenge = mongoose.model('Challenge', ChallengeSchema);
+const ChallengeSubmission = mongoose.model('ChallengeSubmission', ChallengeSubmissionSchema);
+const ChallengeVote = mongoose.model('ChallengeVote', ChallengeVoteSchema);
+const SavedSearch = mongoose.model('SavedSearch', SavedSearchSchema);
+const AuthToken = mongoose.model('AuthToken', AuthTokenSchema);
+const Payment = mongoose.model('Payment', PaymentSchema);
+const Pack = mongoose.model('Pack', PackSchema);
+const ApiKey = mongoose.model('ApiKey', ApiKeySchema);
+const DownloadHistory = mongoose.model('DownloadHistory', DownloadHistorySchema);
 
-async function clearDb() {
-  await User.deleteMany({});
-  await Wallpaper.deleteMany({});
-  await Playlist.deleteMany({});
-  await DailyAnalytics.deleteMany({});
+const ALL_MODELS = [
+  User, Wallpaper, Playlist, DailyAnalytics, Report, Comment, Notification, Challenge,
+  ChallengeSubmission, ChallengeVote, SavedSearch, AuthToken, Payment, Pack, ApiKey, DownloadHistory
+];
+
+const isTestDatabaseName = (name) => /_test$/i.test(name || '');
+
+/**
+ * Delete every document in every collection.
+ * Refuses to run unless the connected database name ends in "_test". The only
+ * override is { allowNonTest: true }, used by `npm run seed --force` after it
+ * has asked the operator to confirm the database name.
+ */
+async function clearDb({ allowNonTest = false } = {}) {
+  await mongoose.connection.asPromise();
+  const dbName = mongoose.connection.name;
+  if (!isTestDatabaseName(dbName) && !allowNonTest) {
+    throw new Error(`clearDb refused: "${dbName}" is not a test database (name must end in "_test").`);
+  }
+  await Promise.all(ALL_MODELS.map((Model) => Model.deleteMany({})));
 }
 
 async function closeDb() {
@@ -57,6 +96,20 @@ module.exports = {
   Wallpaper,
   Playlist,
   DailyAnalytics,
+  Report,
+  Comment,
+  Notification,
+  Challenge,
+  ChallengeSubmission,
+  ChallengeVote,
+  SavedSearch,
+  AuthToken,
+  Payment,
+  Pack,
+  ApiKey,
+  DownloadHistory,
+  ALL_MODELS,
+  isTestDatabaseName,
   clearDb,
   closeDb,
   mongoose

@@ -1,4 +1,9 @@
-const { Playlist } = require('../../../databaseModels');
+const { Playlist, User, Wallpaper } = require('../../../databaseModels');
+const { exactCI } = require('../../../helper/text');
+const { publicFilter } = require('../../../helper/visibility');
+const { notify } = require('../../../helper/notifications');
+const { streamWallpapersZip } = require('../../../helper/zipStream');
+const { asyncHandler, HttpError } = require('../../../helper/asyncHandler');
 
 /**
  * Create a new playlist
@@ -71,7 +76,9 @@ const getPlaylists = async (req, res) => {
       }
     }
 
-    const playlists = await Playlist.find(query).sort({ createdAt: -1 });
+    const playlists = await Playlist.find(query)
+      .sort({ createdAt: -1 })
+      .populate({ path: 'coverWallpaperId', select: 'imageUrl status', match: publicFilter() });
     res.status(200).json(playlists);
   } catch (error) {
     res.status(500).json({ message: 'Server error retrieving playlists.', error: error.message });
@@ -87,7 +94,7 @@ const getPlaylistById = async (req, res) => {
     const currentUserId = req.user ? req.user.id : null;
 
     const playlist = await Playlist.findById(id)
-      .populate('wallpapers')
+      .populate({ path: 'wallpapers', match: publicFilter() })
       .populate('contributors', 'username avatarUrl');
     if (!playlist) {
       return res.status(404).json({ message: 'Playlist not found.' });
@@ -254,8 +261,10 @@ const addContributor = async (req, res) => {
     }
 
     // Find user to add
-    const { User } = require('../../../databaseModels');
-    const userToAdd = await User.findOne({ username: { $regex: new RegExp('^' + username + '$', 'i') } });
+    if (typeof username !== 'string') {
+      return res.status(400).json({ message: 'Username is required.' });
+    }
+    const userToAdd = await User.findOne({ username: exactCI(username) });
     if (!userToAdd) {
       return res.status(404).json({ message: 'User not found.' });
     }
@@ -273,6 +282,15 @@ const addContributor = async (req, res) => {
 
     playlist.contributors.push(userToAdd._id);
     await playlist.save();
+
+    await notify({
+      userId: userToAdd._id,
+      type: 'collection-invite',
+      actorId: req.user.id,
+      actorName: req.user.username,
+      text: `added you to the collection "${playlist.name}"`,
+      link: `/playlists/${playlist._id}`
+    });
 
     const updatedPlaylist = await Playlist.findById(id).populate('contributors', 'username avatarUrl');
 
@@ -324,7 +342,122 @@ const removeContributor = async (req, res) => {
   }
 };
 
+const isPlaylistOwner = (playlist, user) => String(playlist.creatorId) === user.id;
+const canEditPlaylist = (playlist, user) => isPlaylistOwner(playlist, user)
+  || (playlist.contributors || []).some((contributor) => String(contributor) === user.id);
+const canViewPlaylist = (playlist, user) => playlist.isPublic || (!!user && canEditPlaylist(playlist, user));
+
+const loadEditable = async (id, user) => {
+  const playlist = await Playlist.findById(id);
+  if (!playlist) throw new HttpError(404, 'Playlist not found.');
+  if (!canEditPlaylist(playlist, user)) throw new HttpError(403, 'Unauthorized to modify this playlist.');
+  return playlist;
+};
+
+/** Choose the collection's cover image. It must already be in the collection. */
+const setCover = asyncHandler(async (req, res) => {
+  const playlist = await loadEditable(req.params.id, req.user);
+  const { wallpaperId } = req.body;
+  if (wallpaperId && !playlist.wallpapers.some((id) => String(id) === String(wallpaperId))) {
+    throw new HttpError(400, 'Choose a wallpaper from this collection.');
+  }
+  playlist.coverWallpaperId = wallpaperId || null;
+  await playlist.save();
+  res.status(200).json({ message: 'Cover updated.', coverWallpaperId: playlist.coverWallpaperId });
+});
+
+/**
+ * Save a new order. Wallpapers the sender couldn't see (such as ones later hidden
+ * by moderators) keep their place at the end rather than being dropped.
+ */
+const reorderWallpapers = asyncHandler(async (req, res) => {
+  const playlist = await loadEditable(req.params.id, req.user);
+  const { wallpaperIds } = req.body;
+  if (!Array.isArray(wallpaperIds)) throw new HttpError(400, 'Send the wallpapers in their new order.');
+
+  const current = playlist.wallpapers.map(String);
+  const requested = [...new Set(wallpaperIds.map(String))];
+  if (requested.some((id) => !current.includes(id))) throw new HttpError(400, 'That list contains wallpapers that aren\'t in this collection.');
+
+  playlist.wallpapers = [...requested, ...current.filter((id) => !requested.includes(id))];
+  await playlist.save();
+  res.status(200).json({ message: 'Order saved.', wallpapers: playlist.wallpapers });
+});
+
+const TIME_SLOTS = ['dawn', 'day', 'dusk', 'night'];
+
+/** Which part of the day an hour (0-23) belongs to. */
+const slotForHour = (hour) => {
+  if (hour >= 5 && hour < 8) return 'dawn';
+  if (hour >= 8 && hour < 17) return 'day';
+  if (hour >= 17 && hour < 20) return 'dusk';
+  return 'night';
+};
+
+const setTimeSlots = asyncHandler(async (req, res) => {
+  const playlist = await loadEditable(req.params.id, req.user);
+  const slots = req.body.timeSlots || {};
+  const members = playlist.wallpapers.map(String);
+
+  for (const slot of TIME_SLOTS) {
+    const value = slots[slot];
+    if (value && !members.includes(String(value))) throw new HttpError(400, 'Choose wallpapers from this collection.');
+    playlist.timeSlots[slot] = value || null;
+  }
+  await playlist.save();
+  res.status(200).json({ message: 'Time-of-day set saved.', timeSlots: playlist.timeSlots });
+});
+
+/**
+ * The wallpaper for the viewer's current part of the day. The server can't know
+ * the viewer's time zone, so clients send their local hour. An empty slot falls
+ * back to the next filled one, so a partly-filled set always shows something.
+ */
+const getCurrentSlot = asyncHandler(async (req, res) => {
+  const playlist = await Playlist.findById(req.params.id)
+    .populate({ path: 'timeSlots.dawn timeSlots.day timeSlots.dusk timeSlots.night', match: publicFilter() });
+  if (!playlist || !canViewPlaylist(playlist, req.user)) throw new HttpError(404, 'Playlist not found.');
+
+  const parsedHour = parseInt(req.query.hour, 10);
+  const hour = parsedHour >= 0 && parsedHour <= 23 ? parsedHour : new Date().getHours();
+  const slot = slotForHour(hour);
+  const start = TIME_SLOTS.indexOf(slot);
+  const order = TIME_SLOTS.map((_, offset) => TIME_SLOTS[(start + offset) % TIME_SLOTS.length]);
+  const filled = order.find((name) => playlist.timeSlots?.[name]);
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({
+    slot,
+    servedSlot: filled || null,
+    wallpaper: filled ? playlist.timeSlots[filled] : null,
+    timeSlots: playlist.timeSlots
+  });
+});
+
+/** Download a collection as a ZIP. Access follows the same rules as viewing it. */
+const downloadZip = asyncHandler(async (req, res) => {
+  const playlist = await Playlist.findById(req.params.id)
+    .populate({ path: 'wallpapers', match: publicFilter(), select: 'title imageUrl filename' })
+    .lean();
+  const viewer = req.user;
+  const allowed = playlist && (
+    playlist.isPublic ||
+    (viewer && (String(playlist.creatorId) === viewer.id || (playlist.contributors || []).some((c) => String(c) === viewer.id)))
+  );
+  if (!allowed) throw new HttpError(404, 'Playlist not found.');
+  if (!playlist.wallpapers?.length) throw new HttpError(400, 'This collection is empty.');
+
+  await streamWallpapersZip(res, playlist.wallpapers, playlist.name);
+  await Promise.all(playlist.wallpapers.map((wp) => Wallpaper.updateOne({ _id: wp._id }, { $inc: { downloadsCount: 1 } })));
+});
+
 module.exports = {
+  setCover,
+  reorderWallpapers,
+  setTimeSlots,
+  getCurrentSlot,
+  downloadZip,
+  slotForHour,
   createPlaylist,
   getPlaylists,
   getPlaylistById,

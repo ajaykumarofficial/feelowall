@@ -8,5 +8,33 @@ module.exports = {
   JWT_SECRET: process.env.JWT_SECRET,
   CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
-  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
+
+  // Public addresses, used in emails, OAuth redirects, payment returns, and share pages
+  FRONTEND_URL: (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, ''),
+  API_PUBLIC_URL: (process.env.API_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/$/, ''),
+
+  // OAuth (a provider is offered only when both of its values are set)
+  OAUTH: {
+    Google: { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET },
+    GitHub: { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET },
+    Discord: { clientId: process.env.DISCORD_CLIENT_ID, clientSecret: process.env.DISCORD_CLIENT_SECRET }
+  },
+
+  // Email (SMTP_URL example: smtps://user:pass@smtp.example.com)
+  SMTP_URL: process.env.SMTP_URL,
+  MAIL_FROM: process.env.MAIL_FROM || 'FeeloWall <no-reply@feelowall.local>',
+
+  // Payments
+  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+  PLATFORM_FEE_PERCENT: Number(process.env.PLATFORM_FEE_PERCENT || 0),
+  STRIPE_AUTOMATIC_TAX: process.env.STRIPE_AUTOMATIC_TAX === 'true',
+
+  // AI features are off unless a key is set
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  AI_MODEL: process.env.AI_MODEL || 'claude-opus-5-5',
+
+  // Optional: POST redacted server errors to this URL (e.g. a Slack or Discord webhook)
+  ERROR_WEBHOOK_URL: process.env.ERROR_WEBHOOK_URL
 };

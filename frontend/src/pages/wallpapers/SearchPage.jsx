@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { useAuth } from '../auth/useAuth';
+import { GalleryFilters, TagSuggestions } from './GalleryFilters';
+import { activatable } from '../../components/ui';
+import { discovery, errorMessage } from '../../services/platformService';
 
 const pageVariants = {
   initial: { opacity: 0, y: 15 },
@@ -33,9 +37,50 @@ export const SearchPage = ({
   onResetFilters,
   onZoom,
   onEdit,
-  onDelete
+  onDelete,
+  filters = {},
+  onFiltersChange,
+  showToast
 }) => {
   const navigate = useNavigate();
+  const { openAuth } = useAuth();
+  const [naturalQuery, setNaturalQuery] = useState('');
+  const [naturalResults, setNaturalResults] = useState(null);
+  const [naturalBusy, setNaturalBusy] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
+
+  useEffect(() => {
+    discovery.aiStatus().then((res) => setAiAvailable(res.available)).catch(() => setAiAvailable(false));
+  }, []);
+
+  const runNaturalSearch = async (event) => {
+    event.preventDefault();
+    if (!naturalQuery.trim()) return;
+    setNaturalBusy(true);
+    try {
+      setNaturalResults(await discovery.aiSearch(naturalQuery.trim()));
+    } catch (err) {
+      showToast?.(errorMessage(err), 'error');
+    } finally {
+      setNaturalBusy(false);
+    }
+  };
+
+  const saveSearch = async () => {
+    if (!currentUser) {
+      openAuth('login');
+      return;
+    }
+    try {
+      const res = await discovery.saveSearch({ search: searchQuery, category });
+      showToast?.(res.message, 'success');
+    } catch (err) {
+      showToast?.(errorMessage(err), 'error');
+    }
+  };
+
+  const shownWallpapers = naturalResults ? naturalResults.wallpapers : wallpapers;
+
   const sentinelRef = useRef(null);
   const [searchInput, setSearchInput] = useState(searchQuery);
 
@@ -109,12 +154,34 @@ export const SearchPage = ({
         </p>
       </motion.div>
 
+      {aiAvailable && (
+        <form onSubmit={runNaturalSearch} className="fw-inline-form fw-spaced">
+          <input
+            className="fw-input"
+            aria-label="Describe the wallpaper you want"
+            placeholder="Describe what you want, like calm blue mountains at night"
+            maxLength={300}
+            value={naturalQuery}
+            onChange={(e) => setNaturalQuery(e.target.value)}
+          />
+          <button type="submit" className="btn btn-primary" disabled={naturalBusy}>{naturalBusy ? 'Searching...' : 'Describe'}</button>
+          {naturalResults && <button type="button" className="btn btn-outline" onClick={() => { setNaturalResults(null); setNaturalQuery(''); }}>Clear</button>}
+        </form>
+      )}
+
       {/* Grid Controls / Info bar */}
       <div className="gallery-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem', marginBottom: '2rem' }}>
         <div>
           <span className="section-desc" style={{ fontWeight: 600 }}>
-            {loading ? 'Searching directory...' : `${wallpapers.length} wallpaper${wallpapers.length === 1 ? '' : 's'} found`}
+            {loading ? 'Searching directory...' : `${shownWallpapers.length} wallpaper${shownWallpapers.length === 1 ? '' : 's'} found`}
           </span>
+        </div>
+
+        <div className="fw-row">
+          {(searchQuery || (category && category !== 'All')) && (
+            <button type="button" className="btn btn-outline" onClick={saveSearch}>Save Search</button>
+          )}
+          {onFiltersChange && <GalleryFilters filters={filters} onChange={onFiltersChange} />}
         </div>
 
         <div className="gallery-sorting">
@@ -126,6 +193,7 @@ export const SearchPage = ({
             className="select-dropdown"
           >
             <option value="latest">Newest</option>
+            <option value="trending">Trending</option>
             <option value="likes">Most Liked</option>
             <option value="views">Most Viewed</option>
             <option value="downloads">Most Downloaded</option>
@@ -142,7 +210,7 @@ export const SearchPage = ({
       )}
 
       {/* Empty State */}
-      {!loading && wallpapers.length === 0 && (
+      {!loading && shownWallpapers.length === 0 && (
         <div className="empty-state" style={{ marginTop: '3rem' }}>
           <ImageOff className="empty-icon" size={48} />
           <h3>No Results Found</h3>
@@ -154,9 +222,9 @@ export const SearchPage = ({
       )}
 
       {/* Grid Display */}
-      {!loading && wallpapers.length > 0 && (
+      {!loading && shownWallpapers.length > 0 && (
         <div className="wallpaper-grid">
-          {wallpapers.map((wp, index) => {
+          {shownWallpapers.map((wp, index) => {
             const imgSource = wp.imageUrl.startsWith('/uploads')
               ? `${BACKEND_URL}${wp.imageUrl}`
               : wp.imageUrl;
@@ -172,9 +240,11 @@ export const SearchPage = ({
                 viewport={{ once: true, margin: "0px 0px -40px 0px" }}
                 transition={{ duration: 0.35, delay: (index % 8) * 0.04 }}
                 onClick={() => onZoom(wp)}
+                {...activatable(() => onZoom(wp))}
+                aria-label={wp.title}
               >
                 <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                  <img src={imgSource} alt={wp.title} loading="lazy" />
+                  <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                   {wp.isLive && (
                     <span className="live-badge" style={{
                       position: 'absolute',

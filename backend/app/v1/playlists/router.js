@@ -9,9 +9,15 @@ const {
   addWallpaperToPlaylist,
   removeWallpaperFromPlaylist,
   addContributor,
-  removeContributor
+  removeContributor,
+  setCover,
+  reorderWallpapers,
+  setTimeSlots,
+  getCurrentSlot,
+  downloadZip
 } = require('./controller');
-const { authenticateToken, optionalAuthenticateToken } = require('../../../middleware/auth');
+const { authenticateToken, optionalAuthenticateToken, softAuthenticateToken } = require('../../../middleware/auth');
+const { zipLimiter } = require('../../../middleware/rateLimiter');
 
 router.post('/', authenticateToken, createPlaylist);
 router.get('/', optionalAuthenticateToken, getPlaylists);
@@ -24,5 +30,11 @@ router.delete('/:id/wallpapers/:wpId', authenticateToken, removeWallpaperFromPla
 
 router.post('/:id/contributors', authenticateToken, addContributor);
 router.delete('/:id/contributors/:userId', authenticateToken, removeContributor);
+
+router.put('/:id/cover', authenticateToken, setCover);
+router.put('/:id/order', authenticateToken, reorderWallpapers);
+router.put('/:id/time-slots', authenticateToken, setTimeSlots);
+router.get('/:id/current', softAuthenticateToken, getCurrentSlot);
+router.get('/:id/download', zipLimiter, softAuthenticateToken, downloadZip);
 
 module.exports = router;

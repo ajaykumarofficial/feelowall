@@ -4,6 +4,9 @@ import { useAuth } from '../auth/useAuth';
 import playlistService from '../../services/playlistService';
 import { Folder, Heart, Lock, Globe, Share2, Trash2, ArrowLeft, Edit3, X, UserPlus, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { API_BASE } from '../../services/platformService';
+import { activatable } from '../../components/ui';
+import { ArrangeCollection, ArrangeToggle, CollectionActions, TimeOfDayFrame } from './CollectionTools';
 
 const pageVariants = {
   initial: { opacity: 0, y: 15 },
@@ -38,6 +41,9 @@ export const PlaylistDetailPage = ({ playlistId, onBack, onZoom, onLike, showToa
   const [isManagingContributors, setIsManagingContributors] = useState(false);
   const [newContributorUsername, setNewContributorUsername] = useState('');
   const [contribLoading, setContribLoading] = useState(false);
+
+  const [isArranging, setIsArranging] = useState(false);
+  const [playingTimeOfDay, setPlayingTimeOfDay] = useState(false);
 
   const handleAddContributor = async (e) => {
     e.preventDefault();
@@ -95,7 +101,7 @@ export const PlaylistDetailPage = ({ playlistId, onBack, onZoom, onLike, showToa
   }, [activePlaylistId]);
 
   const handleShare = () => {
-    const shareUrl = `${window.location.origin}/playlists/${activePlaylistId}`;
+    const shareUrl = `${API_BASE}/share/playlist/${activePlaylistId}`;
     navigator.clipboard.writeText(shareUrl).then(
       () => showToast('Shareable link copied to clipboard!', 'success'),
       () => showToast('Could not copy link.', 'error')
@@ -220,6 +226,10 @@ export const PlaylistDetailPage = ({ playlistId, onBack, onZoom, onLike, showToa
                 <span>Play Slideshow</span>
               </button>
             )}
+            <CollectionActions playlist={playlist} showToast={showToast} onPlayTimeOfDay={() => setPlayingTimeOfDay(true)} />
+            {(isOwner || isContributor) && playlist.wallpapers?.length > 0 && (
+              <ArrangeToggle active={isArranging} onClick={() => setIsArranging((value) => !value)} />
+            )}
             {playlist.isPublic && (
               <button className="btn" onClick={handleShare} style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', background: 'var(--card-bg)', border: '1px solid var(--border-color)', height: '40px' }}>
                 <Share2 size={15} />
@@ -253,6 +263,9 @@ export const PlaylistDetailPage = ({ playlistId, onBack, onZoom, onLike, showToa
         </div>
       </div>
 
+      {isArranging && <ArrangeCollection playlist={playlist} onChanged={fetchPlaylistDetails} showToast={showToast} />}
+      {playingTimeOfDay && <TimeOfDayFrame playlistId={activePlaylistId} onClose={() => setPlayingTimeOfDay(false)} />}
+
       {/* WALLPAPERS GRID */}
       <div>
         <h3 className="section-title" style={{ fontSize: '1.4rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem', marginBottom: '1.5rem' }}>Wallpapers ({playlist.wallpapers.length})</h3>
@@ -275,9 +288,11 @@ export const PlaylistDetailPage = ({ playlistId, onBack, onZoom, onLike, showToa
                   key={wp._id || wp.id}
                   className="wallpaper-card"
                   onClick={() => onZoom(wp)}
+                  {...activatable(() => onZoom(wp))}
+                  aria-label={wp.title}
                 >
                   <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                    <img src={imgSource} alt={wp.title} loading="lazy" />
+                    <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                     {wp.isLive && (
                       <span className="live-badge" style={{
                         position: 'absolute',

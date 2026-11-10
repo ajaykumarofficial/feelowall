@@ -1,4 +1,4 @@
-const CACHE_NAME = 'feelowall-cache-v1';
+const CACHE_NAME = 'feelowall-cache-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -41,6 +41,9 @@ self.addEventListener('fetch', (e) => {
 
   // Skip non-GET requests
   if (request.method !== 'GET') return;
+
+  // Signed-in responses are private, and must not stay in a cache after logging out.
+  if (request.headers.has('Authorization')) return;
 
   // Handle API Requests (Network First)
   if (url.pathname.includes('/api/')) {

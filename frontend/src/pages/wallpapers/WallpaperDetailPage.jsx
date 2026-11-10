@@ -9,6 +9,11 @@ import AmbientEffects from './AmbientEffects';
 import CropOverlay from './CropOverlay';
 import { extractColors } from '../../utils/extractColors';
 import { cropAndDownload, CROP_PRESETS } from '../../utils/cropImage';
+import { pickBestVariant } from '../../utils/variants';
+import { API_BASE, mediaUrl } from '../../services/platformService';
+import { VerifiedBadge, activatable } from '../../components/ui';
+import CommentsSection from './CommentsSection';
+import { EmbedButton, ImageTools, LicenseInfo, SafetyActions, TagList, TipButton } from './WallpaperExtras';
 import {
   ArrowLeft,
   User,
@@ -212,7 +217,8 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
 
   // Copy URL to Clipboard
   const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href).then(
+    // The share page has link-preview tags, and sends people on to this page.
+    navigator.clipboard.writeText(`${API_BASE}/share/wallpaper/${id}`).then(
       () => showToast('Page URL copied to clipboard!', 'success'),
       () => showToast('Could not copy link.', 'error')
     );
@@ -344,6 +350,9 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
   const isOwner = user && (user.id === wallpaper.uploadedById || user.username.toLowerCase() === wallpaper.uploadedBy.toLowerCase());
   const isLiked = user && wallpaper.likes && wallpaper.likes.includes(user.id);
   const isFollowingCreator = followingList.some(item => item.username.toLowerCase() === wallpaper.uploadedBy.toLowerCase());
+  const isAdmin = user?.role === 'admin';
+  const status = wallpaper.status || 'published';
+  const isPublished = status === 'published';
 
   return (
     <motion.div
@@ -376,8 +385,19 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
             <Share2 size={16} />
             <span>Share</span>
           </button>
+          {isPublished && <EmbedButton path={`wallpaper/${id}`} title={wallpaper.title} showToast={showToast} />}
         </div>
       </div>
+
+      {!isPublished && (
+        <p className="fw-banner" role="status">
+          {status === 'draft' && 'This is a draft. Only you can see it.'}
+          {status === 'scheduled' && `Scheduled to publish ${new Date(wallpaper.scheduledAt).toLocaleString()}. Only you can see it for now.`}
+          {status === 'hidden' && 'A moderator has hidden this wallpaper from others.'}
+          {status === 'removed' && 'A moderator has removed this wallpaper.'}
+          {status === 'pack-only' && 'This wallpaper is only available in a paid pack.'}
+        </p>
+      )}
 
       {/* Main 2-Column Detail View */}
       <div className="wallpaper-detail-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', gap: '2rem', alignItems: 'start' }}>
@@ -418,7 +438,7 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                 ref={imageRef}
                 crossOrigin="anonymous"
                 src={imageUrl}
-                alt={wallpaper.title}
+                alt={wallpaper.altText || wallpaper.title}
                 onLoad={handleImageLoad}
                 style={{
                   width: '100%',
@@ -598,6 +618,7 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                   >
                     {wallpaper.uploadedBy}
                   </strong>
+                  {creatorProfile?.isVerified && <> <VerifiedBadge /></>}
                 </div>
               </div>
 
@@ -615,6 +636,10 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                 </button>
               )}
             </div>
+
+            {creatorProfile?.acceptsTips && !isOwner && (
+              <div className="fw-spaced"><TipButton username={wallpaper.uploadedBy} showToast={showToast} /></div>
+            )}
 
             {/* Creator Tipping Links */}
             {creatorProfile && (creatorProfile.tippingLinks?.kofi || creatorProfile.tippingLinks?.buyMeACoffee || creatorProfile.tippingLinks?.stripe) && (
@@ -641,6 +666,9 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                 </div>
               </div>
             )}
+
+            <TagList tags={wallpaper.tags} />
+            <LicenseInfo wallpaper={wallpaper} />
 
             {/* Stats Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem', marginBottom: '1.5rem' }}>
@@ -685,7 +713,7 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                   <span>{wallpaper.likesCount || 0} Likes</span>
                 </button>
 
-                {isOwner && onToggleFeature && (
+                {isAdmin && onToggleFeature && (
                   <button
                     type="button"
                     onClick={() => onToggleFeature(wallpaper._id || wallpaper.id)}
@@ -752,8 +780,11 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
               onClick={() => {
                 const W = window.screen.width;
                 const H = window.screen.height;
+                // Start from the version closest to this screen's shape, then fit it exactly.
+                const theme = document.documentElement.getAttribute('data-theme');
+                const best = pickBestVariant(wallpaper, W, H, theme);
                 cropAndDownload(
-                  imageUrl,
+                  mediaUrl(best.imageUrl),
                   `${wallpaper.title.toLowerCase().replace(/\s+/g, '-')}-device-${W}x${H}`,
                   W / H,
                   isAdjusted ? adjustments : null,
@@ -780,9 +811,19 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
               <Monitor size={16} />
               <span>Interactive Device Previews</span>
             </button>
+
+            <ImageTools wallpaper={wallpaper} palette={palette} showToast={showToast} />
           </div>
         </div>
       </div>
+
+      {!isOwner && (
+        <div className="fw-spaced fw-safety">
+          <SafetyActions targetType="wallpaper" targetId={id} label="this wallpaper" username={wallpaper.uploadedBy} showToast={showToast} />
+        </div>
+      )}
+
+      <CommentsSection wallpaperId={id} ownerId={wallpaper.uploadedById} showToast={showToast} />
 
       {/* Similar Wallpapers Section */}
       <div style={{ marginTop: '4rem', borderTop: '1px solid var(--border-color)', paddingTop: '2.5rem' }}>
@@ -815,9 +856,11 @@ export const WallpaperDetailPage = ({ showToast, onLike, onToggleFeature, onColo
                   key={wp._id || wp.id}
                   className="wallpaper-card"
                   onClick={() => navigate(`/wallpaper/${wp._id || wp.id}`)}
+                  {...activatable(() => navigate(`/wallpaper/${wp._id || wp.id}`))}
+                  aria-label={wp.title}
                 >
                   <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                    <img src={imgSource} alt={wp.title} loading="lazy" />
+                    <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                     {wp.isLive && (
                       <span className="live-badge" style={{
                         position: 'absolute',

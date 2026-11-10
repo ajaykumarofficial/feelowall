@@ -1,7 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import { AuthProvider, useAuth } from './pages/auth/useAuth';
+import { I18nProvider } from './i18n';
+import AccountSettingsPage from './pages/auth/AccountSettingsPage';
+import { OAuthCallbackPage, ResetPasswordPage, VerifyEmailPage } from './pages/auth/RecoveryPages';
+import AdminPage from './pages/admin/AdminPage';
+import { ChallengeDetailPage, ChallengesPage } from './pages/community/ChallengesPage';
+import LeaderboardPage from './pages/community/LeaderboardPage';
+import { ForYouPage, TagPage } from './pages/wallpapers/DiscoverPages';
+import CreatorStudioPage from './pages/studio/CreatorStudioPage';
+import { PackDetailPage, PacksPage } from './pages/packs/PacksPages';
+import DevelopersPage from './pages/developers/DevelopersPage';
+import MultiMonitorPage from './pages/tools/MultiMonitorPage';
+import { activatable } from './components/ui';
 import { useWallpapers } from './pages/wallpapers/useWallpapers';
 import AuthModal from './pages/auth/AuthModal';
 import AuthPage from './pages/auth/AuthPage';
@@ -105,7 +117,7 @@ const AppContent = () => {
   const location = useLocation();
 
   // Derive currentPage dynamically from route location pathname
-  let currentPage = 'explore';
+  let currentPage = location.pathname === '/' ? 'explore' : 'other';
   if (location.pathname === '/search') currentPage = 'search';
   else if (location.pathname === '/profile') currentPage = 'profile';
   else if (location.pathname === '/feed') currentPage = 'feed';
@@ -161,6 +173,12 @@ const AppContent = () => {
 
   const toggleTheme = () => {
     if (lampAnimating) return; // Prevent double trigger
+
+    // Skip the lamp animation for people who've asked for less motion.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+      return;
+    }
     
     // Step 1: Slide down lamp
     setLampAnimating(true);
@@ -337,11 +355,14 @@ const AppContent = () => {
     setSortBy,
     colorQuery,
     setColorQuery,
+    filters,
+    setFilters,
     lightboxWp,
     isUploadOpen,
     uploadLoading,
     editingWp,
     featuredWallpapers,
+    featuredLoaded,
     isBulkUploadOpen,
     openBulkUpload,
     closeBulkUpload,
@@ -583,8 +604,11 @@ const AppContent = () => {
             colorQuery={colorQuery}
             onColorChange={setColorQuery}
             featuredWallpapers={featuredWallpapers}
+            featuredLoaded={featuredLoaded}
             onToggleFeature={handleToggleFeature}
             onStartSlideshow={setSlideshowWallpapers}
+            filters={filters}
+            onFiltersChange={setFilters}
           />
         } />
         <Route path="/explore" element={<Navigate to="/" replace />} />
@@ -609,6 +633,9 @@ const AppContent = () => {
             onZoom={handleOpenLightbox}
             onEdit={openEdit}
             onDelete={handleDelete}
+            filters={filters}
+            onFiltersChange={setFilters}
+            showToast={showToast}
           />
         } />
         <Route path="/profile" element={
@@ -686,9 +713,11 @@ const AppContent = () => {
                           key={wp._id || wp.id}
                           className="wallpaper-card"
                           onClick={() => handleOpenLightbox(wp)}
+                          {...activatable(() => handleOpenLightbox(wp))}
+                          aria-label={wp.title}
                         >
                           <div className="card-img-wrapper" style={{ position: 'relative' }}>
-                            <img src={imgSource} alt={wp.title} loading="lazy" />
+                            <img src={imgSource} alt={wp.altText || wp.title} loading="lazy" />
                             {wp.isLive && (
                               <span className="live-badge" style={{
                                 position: 'absolute',
@@ -767,6 +796,21 @@ const AppContent = () => {
             showToast={showToast}
           />
         } />
+        <Route path="/settings" element={<AccountSettingsPage showToast={showToast} />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage showToast={showToast} />} />
+        <Route path="/oauth/callback/:provider" element={<OAuthCallbackPage showToast={showToast} />} />
+        <Route path="/admin" element={<AdminPage showToast={showToast} />} />
+        <Route path="/challenges" element={<ChallengesPage showToast={showToast} />} />
+        <Route path="/challenges/:id" element={<ChallengeDetailPage showToast={showToast} />} />
+        <Route path="/leaderboard" element={<LeaderboardPage />} />
+        <Route path="/tags/:tag" element={<TagPage showToast={showToast} />} />
+        <Route path="/for-you" element={<ForYouPage showToast={showToast} />} />
+        <Route path="/studio" element={<CreatorStudioPage showToast={showToast} />} />
+        <Route path="/packs" element={<PacksPage />} />
+        <Route path="/packs/:id" element={<PackDetailPage showToast={showToast} />} />
+        <Route path="/developers" element={<DevelopersPage showToast={showToast} />} />
+        <Route path="/tools/multi-monitor" element={<MultiMonitorPage showToast={showToast} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AnimatePresence>
@@ -792,7 +836,7 @@ const AppContent = () => {
 
 
       {/* TOAST ALERTS */}
-      <div className="toast-container">
+      <div className="toast-container" role="status" aria-live="polite">
         <AnimatePresence>
           {toasts.map((toast) => {
             let ToastIcon = Info;
@@ -1003,9 +1047,13 @@ const AppContent = () => {
 export const App = () => {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
+      <I18nProvider>
+        <AuthProvider>
+          <MotionConfig reducedMotion="user">
+            <AppContent />
+          </MotionConfig>
+        </AuthProvider>
+      </I18nProvider>
     </BrowserRouter>
   );
 };

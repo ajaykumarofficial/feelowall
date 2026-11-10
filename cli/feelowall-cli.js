@@ -2,11 +2,12 @@
 
 /**
  * FeeloWall Desktop Sync Client (CLI)
- * 
+ *
  * Usage:
- *   node feelowall-cli.js login <api_url> <username> <password>
+ *   node feelowall-cli.js login <api_url> <username> <password> [2fa_code]
  *   node feelowall-cli.js sync
  *   node feelowall-cli.js rotate <interval_minutes>
+ *   node feelowall-cli.js timeset <collection_id> [--watch]
  */
 
 const fs = require('fs');
@@ -44,7 +45,7 @@ const makeRequest = (url, method, headers = {}, body = null) => {
   return new Promise((resolve, reject) => {
     const isHttps = url.startsWith('https');
     const client = isHttps ? https : http;
-    
+
     const parsedUrl = new URL(url);
     const options = {
       hostname: parsedUrl.hostname,
@@ -99,27 +100,27 @@ const downloadImage = (url, destPath) => {
   return new Promise((resolve, reject) => {
     const isHttps = url.startsWith('https');
     const client = isHttps ? https : http;
-    
+
     const req = client.get(url, (res) => {
       if (res.statusCode !== 200) {
         reject(new Error(`Failed to download image: status code ${res.statusCode}`));
         return;
       }
-      
+
       const fileStream = fs.createWriteStream(destPath);
       res.pipe(fileStream);
-      
+
       fileStream.on('finish', () => {
         fileStream.close();
         resolve(destPath);
       });
-      
+
       fileStream.on('error', (err) => {
         fs.unlink(destPath, () => {});
         reject(err);
       });
     });
-    
+
     req.on('error', (err) => {
       reject(err);
     });
@@ -134,7 +135,7 @@ const setDesktopWallpaper = (imagePath) => {
     if (platform === 'win32') {
       const psCommand = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Wallpaper { [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }'; [Wallpaper]::SystemParametersInfo(20, 0, '${absolutePath}', 3)`;
       const fullCommand = `powershell -NoProfile -Command "${psCommand.replace(/"/g, '\\"')}"`;
-      
+
       exec(fullCommand, (err, stdout, stderr) => {
         if (err) {
           reject(new Error(`Windows PowerShell failed: ${stderr || err.message}`));
@@ -174,19 +175,26 @@ const setDesktopWallpaper = (imagePath) => {
   });
 };
 
-const handleLogin = async (apiUrl, username, password) => {
+const handleLogin = async (apiUrl, username, password, code) => {
   console.log(`Authenticating with FeeloWall server at ${apiUrl}...`);
   try {
     const cleanUrl = apiUrl.replace(/\/$/, '');
-    const data = await makeRequest(`${cleanUrl}/api/auth/login`, 'POST', {}, { username, password });
-    
+    let data = await makeRequest(`${cleanUrl}/api/auth/login`, 'POST', {}, { username, password });
+    if (data.twoFactorRequired) {
+      if (!code) {
+        console.error('This account uses two-factor authentication. Add your current code to the end of the login command.');
+        process.exit(1);
+      }
+      data = await makeRequest(`${cleanUrl}/api/auth/2fa/verify`, 'POST', {}, { challenge: data.challenge, code });
+    }
+
     saveConfig({
       apiUrl: cleanUrl,
       token: data.token,
       username: data.user.username,
       userId: data.user.id
     });
-    
+
     console.log(`\n===========================================`);
     console.log(`🚀 Authentication successful!`);
     console.log(`Logged in as: ${data.user.username}`);
@@ -206,56 +214,52 @@ const handleSync = async () => {
     return;
   }
   console.log(`Syncing favorites for ${config.username}...`);
-  
+
   try {
-    // 1. Fetch all wallpapers
-    const exploreData = await makeRequest(
-      `${config.apiUrl}/api/wallpapers`, 
-      'GET', 
+    // 1. Fetch the user's liked wallpapers
+    const likedData = await makeRequest(
+      `${config.apiUrl}/api/wallpapers/liked?limit=100`,
+      'GET',
       { 'Authorization': `Bearer ${config.token}` }
     );
-    
-    // Filter by liked by user
-    const likedWallpapers = exploreData.wallpapers.filter(
-      wp => wp.likes && wp.likes.includes(config.userId)
-    );
-    
+    const likedWallpapers = likedData.wallpapers;
+
     if (likedWallpapers.length === 0) {
       console.log('You do not have any liked wallpapers yet. Go like some wallpapers on FeeloWall!');
       return;
     }
-    
+
     // Choose a random favorite wallpaper
     const randomWp = likedWallpapers[Math.floor(Math.random() * likedWallpapers.length)];
     console.log(`\nSelected Wallpaper: "${randomWp.title}" by ${randomWp.uploadedBy}`);
-    
+
     // Build download URL
     const fullImgUrl = randomWp.imageUrl.startsWith('/uploads')
       ? `${config.apiUrl}${randomWp.imageUrl}`
       : randomWp.imageUrl;
-      
+
     // Local path to save wallpaper
     const tmpDir = path.join(os.tmpdir(), 'feelowall');
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
     }
-    
+
     const ext = path.extname(randomWp.filename) || '.jpg';
     const localPath = path.join(tmpDir, `current_wallpaper${ext}`);
-    
+
     console.log(`Downloading wallpaper to local storage...`);
     await downloadImage(fullImgUrl, localPath);
-    
+
     console.log(`Setting system wallpaper...`);
     await setDesktopWallpaper(localPath);
-    
+
     console.log(`🎉 Desktop wallpaper updated successfully!`);
-    
+
     // Send a view analytics event
     try {
       await makeRequest(`${config.apiUrl}/api/wallpapers/${randomWp._id || randomWp.id}/view`, 'POST');
     } catch (_) {}
-    
+
   } catch (err) {
     console.error(`Sync failed:`, err.message);
   }
@@ -265,12 +269,58 @@ const handleRotate = (intervalMinutes) => {
   const mins = parseInt(intervalMinutes) || 60;
   console.log(`Starting FeeloWall rotation daemon. Wallpaper will rotate every ${mins} minutes.`);
   console.log(`Press Ctrl+C to terminate the daemon.`);
-  
+
   // Do initial sync
   handleSync();
-  
+
   // Schedule rotation
   setInterval(handleSync, mins * 60 * 1000);
+};
+
+/** Set the wallpaper for this part of the day from a time-of-day collection. */
+const applyTimeSet = async (collectionId) => {
+  const config = loadConfig();
+  const data = await makeRequest(
+    `${config.apiUrl}/api/playlists/${encodeURIComponent(collectionId)}/current?hour=${new Date().getHours()}`,
+    'GET',
+    { 'Authorization': `Bearer ${config.token}` }
+  );
+  if (!data.wallpaper) {
+    console.log('This collection has no time-of-day wallpapers set yet.');
+    return null;
+  }
+  const wallpaper = data.wallpaper;
+  const url = wallpaper.imageUrl.startsWith('/uploads') ? `${config.apiUrl}${wallpaper.imageUrl}` : wallpaper.imageUrl;
+  const tmpDir = path.join(os.tmpdir(), 'feelowall');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const localPath = path.join(tmpDir, `timeset${path.extname(new URL(url).pathname) || '.jpg'}`);
+  await downloadImage(url, localPath);
+  await setDesktopWallpaper(localPath);
+  console.log(`${data.slot}: set "${wallpaper.title}" as your wallpaper.`);
+  return wallpaper._id;
+};
+
+const handleTimeSet = async (collectionId, watch) => {
+  let current = null;
+  const check = async () => {
+    try {
+      // Only re-download when the part of the day has actually changed the picture.
+      const config = loadConfig();
+      const data = await makeRequest(
+        `${config.apiUrl}/api/playlists/${encodeURIComponent(collectionId)}/current?hour=${new Date().getHours()}`,
+        'GET',
+        { 'Authorization': `Bearer ${config.token}` }
+      );
+      if (data.wallpaper && data.wallpaper._id !== current) current = await applyTimeSet(collectionId);
+    } catch (err) {
+      console.error('Time-of-day update failed:', err.message);
+    }
+  };
+  await check();
+  if (watch) {
+    console.log('Watching for changes. Press Ctrl+C to stop.');
+    setInterval(check, 5 * 60 * 1000);
+  }
 };
 
 // Main entrypoint CLI router
@@ -282,9 +332,10 @@ if (!command) {
 FeeloWall Desktop Background Sync Client
 =======================================
 Usage:
-  node feelowall-cli.js login <api_url> <username> <password>
+  node feelowall-cli.js login <api_url> <username> <password> [2fa_code]
   node feelowall-cli.js sync
   node feelowall-cli.js rotate <interval_minutes>
+  node feelowall-cli.js timeset <collection_id> [--watch]
 
 Examples:
   node feelowall-cli.js login http://localhost:5000 johndoe secret123
@@ -295,18 +346,24 @@ Examples:
 }
 
 if (command === 'login') {
-  const [apiUrl, username, password] = args.slice(1);
+  const [apiUrl, username, password, code] = args.slice(1);
   if (!apiUrl || !username || !password) {
     console.error('Error: Missing arguments for login. Usage:');
-    console.error('  node feelowall-cli.js login <api_url> <username> <password>');
+    console.error('  node feelowall-cli.js login <api_url> <username> <password> [2fa_code]');
     process.exit(1);
   }
-  handleLogin(apiUrl, username, password);
+  handleLogin(apiUrl, username, password, code);
 } else if (command === 'sync') {
   handleSync();
 } else if (command === 'rotate') {
   const interval = args[1] || '60';
   handleRotate(interval);
+} else if (command === 'timeset') {
+  if (!args[1]) {
+    console.error('Usage: node feelowall-cli.js timeset <collection_id> [--watch]');
+    process.exit(1);
+  }
+  handleTimeSet(args[1], args.includes('--watch'));
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);
