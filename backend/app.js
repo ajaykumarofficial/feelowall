@@ -78,6 +78,21 @@ app.use('/cli', express.static(path.join(__dirname, '..', 'cli'), {
   }
 }));
 
+// In the Docker image the built React app is served from here, so one container serves both.
+// Vite puts content-hashed files under /assets, which can be cached forever; everything else
+// (index.html, sw.js, manifest.json) must be revalidated so a deploy shows up straight away.
+const frontendDist = process.env.FRONTEND_DIST;
+const serveFrontend = Boolean(frontendDist && fs.existsSync(path.join(frontendDist, 'index.html')));
+if (serveFrontend) {
+  app.use(express.static(frontendDist, {
+    index: false,
+    setHeaders: (res, filePath) => {
+      const isHashedAsset = filePath.includes(`${path.sep}assets${path.sep}`);
+      res.setHeader('Cache-Control', isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+    }
+  }));
+}
+
 // After the static files: one gallery page loads dozens of images, which aren't API calls.
 app.use(globalLimiter);
 
@@ -99,6 +114,16 @@ app.use('/api/developer', developerRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/public/v1', publicApiRouter);
 app.use('/', publicPagesRouter);
+
+// Client-side routes (/wallpapers/123, /profile...) all load the React app.
+// API paths and missing files (anything with an extension) still 404.
+if (serveFrontend) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/') || path.extname(req.path)) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
 
 // Global Error Handler Middleware
 app.use((err, req, res, next) => {

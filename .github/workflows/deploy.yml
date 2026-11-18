@@ -1,0 +1,252 @@
+name: Deploy to AWS
+
+# Test -> build image -> push to ECR -> deploy to EC2 through SSM Run Command.
+#
+# GitHub repository settings needed (Settings > Secrets and variables > Actions):
+#   Secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   (IAM user for CI, see README in deploy/)
+#              EC2_INSTANCE_ID (optional)  deploy to this instance; if unset, to every instance tagged App=aerowell
+#   Variables: APP_URL   public address of the site, e.g. https://aerowell.com.au or the ALB DNS name
+#                        (baked into the frontend bundle as VITE_API_URL)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+# Never run two deploys at once; a newer push waits for the running one to finish
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+  AWS_ACCOUNT_ID: "576946302445"
+  ECR_REGISTRY: 576946302445.dkr.ecr.ap-southeast-2.amazonaws.com
+  ECR_REPOSITORY: aerowell
+  # Every running EC2 instance with this tag receives the deploy
+  EC2_TAG_KEY: App
+  EC2_TAG_VALUE: aerowell
+  # SecureString parameter holding the production .env file contents
+  ENV_PARAMETER: /aerowell/production/env
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    # Throwaway database for this run only. The tests wipe whatever they connect to,
+    # so CI must never be given real database credentials.
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Backend - install
+        working-directory: backend
+        run: npm ci
+
+      - name: Backend - tests
+        working-directory: backend
+        env:
+          MONGODB_URI_TEST: mongodb://127.0.0.1:27017/aerowell_test
+          JWT_SECRET: ci-only-secret-not-used-anywhere-else
+        run: npm test
+
+      - name: Frontend - install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend - tests
+        working-directory: frontend
+        run: npx vitest run
+
+      - name: Frontend - build check
+        working-directory: frontend
+        run: npm run build
+
+  build:
+    name: Build and push image
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required settings
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::error::Repository variable APP_URL is not set (Settings > Secrets and variables > Actions > Variables)."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure ECR repository exists
+        run: |
+          if ! aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
+            aws ecr create-repository \
+              --repository-name "$ECR_REPOSITORY" \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability MUTABLE
+            # Keep the 20 newest images so storage doesn't grow forever
+            aws ecr put-lifecycle-policy \
+              --repository-name "$ECR_REPOSITORY" \
+              --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep last 20 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":20},"action":{"type":"expire"}}]}'
+          fi
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Image name
+        id: meta
+        run: |
+          echo "image=${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VITE_API_URL=${{ vars.APP_URL }}
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to EC2
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Send deploy command through SSM
+        id: send
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        run: |
+          # One specific instance if the EC2_INSTANCE_ID secret is set, otherwise every instance with the tag
+          if [ -n "$EC2_INSTANCE_ID" ]; then
+            TARGETS="Key=InstanceIds,Values=${EC2_INSTANCE_ID}"
+          else
+            TARGETS="Key=tag:${EC2_TAG_KEY},Values=${EC2_TAG_VALUE}"
+          fi
+          echo "Deploy target: $TARGETS"
+
+          SCRIPT_B64="$(base64 -w0 deploy/ec2-deploy.sh)"
+
+          PARAMS="$(jq -n \
+            --arg script "$SCRIPT_B64" \
+            --arg image "$IMAGE" \
+            --arg region "$AWS_REGION" \
+            --arg param "$ENV_PARAMETER" \
+            '{
+              commands: [
+                "set -e",
+                ("echo " + $script + " | base64 -d > /tmp/aerowell-deploy.sh"),
+                ("bash /tmp/aerowell-deploy.sh '" + $image + "' '" + $region + "' '" + $param + "'")
+              ],
+              executionTimeout: ["900"]
+            }')"
+
+          COMMAND_ID="$(aws ssm send-command \
+            --document-name AWS-RunShellScript \
+            --comment "aerowell deploy ${GITHUB_SHA::12}" \
+            --targets "$TARGETS" \
+            --max-concurrency 1 \
+            --max-errors 0 \
+            --timeout-seconds 600 \
+            --parameters "$PARAMS" \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          echo "SSM command: $COMMAND_ID"
+          echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deploy to finish
+        env:
+          COMMAND_ID: ${{ steps.send.outputs.command_id }}
+        run: |
+          # Instances are deployed one at a time (max-concurrency 1), so with several
+          # instances behind the ALB the site stays up during the rollout.
+          DEADLINE=$(( $(date +%s) + 1200 ))
+          while true; do
+            STATUS="$(aws ssm list-commands --command-id "$COMMAND_ID" --query 'Commands[0].Status' --output text)"
+            TARGETS="$(aws ssm list-commands --command-id "$COMMAND_ID" --query 'Commands[0].TargetCount' --output text)"
+            echo "Status: $STATUS (instances: $TARGETS)"
+            case "$STATUS" in
+              Pending|InProgress|Delayed) ;;
+              *) break ;;
+            esac
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::Timed out waiting for SSM command $COMMAND_ID"
+              exit 1
+            fi
+            sleep 10
+          done
+
+          if [ "$TARGETS" = "0" ]; then
+            echo "::error::No target instance found. Check that the EC2_INSTANCE_ID secret (or tag ${EC2_TAG_KEY}=${EC2_TAG_VALUE}) matches a running instance that shows as Online in Systems Manager > Fleet Manager."
+            exit 1
+          fi
+
+          # Print each instance's output so failures are readable right here in the Actions log
+          for INSTANCE in $(aws ssm list-command-invocations --command-id "$COMMAND_ID" --query 'CommandInvocations[].InstanceId' --output text); do
+            echo "::group::Output from $INSTANCE"
+            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE" \
+              --query '[Status, StandardOutputContent, StandardErrorContent]' --output text || true
+            echo "::endgroup::"
+          done
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::Deploy finished with status $STATUS"
+            exit 1
+          fi
+          echo "Deployed ${{ needs.build.outputs.image }}"

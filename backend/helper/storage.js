@@ -13,11 +13,14 @@ const config = require('../config');
  * policy that allows public s3:GetObject on the key prefix.
  */
 
+// Static keys are optional. On EC2, set AWS_USE_INSTANCE_ROLE=true and leave the keys out:
+// the SDK then picks up the instance role's short-lived credentials automatically.
+const hasStaticKeys = () => Boolean(config.AWS_ACCESS_KEY_ID && config.AWS_SECRET_ACCESS_KEY);
+
 const isConfigured = () => Boolean(
   config.AWS_S3_BUCKET &&
   config.AWS_REGION &&
-  config.AWS_ACCESS_KEY_ID &&
-  config.AWS_SECRET_ACCESS_KEY
+  (hasStaticKeys() || config.AWS_USE_INSTANCE_ROLE)
 );
 
 let client = null;
@@ -25,10 +28,12 @@ const getClient = () => {
   if (!client) {
     client = new S3Client({
       region: config.AWS_REGION,
-      credentials: {
-        accessKeyId: config.AWS_ACCESS_KEY_ID,
-        secretAccessKey: config.AWS_SECRET_ACCESS_KEY
-      }
+      ...(hasStaticKeys() ? {
+        credentials: {
+          accessKeyId: config.AWS_ACCESS_KEY_ID,
+          secretAccessKey: config.AWS_SECRET_ACCESS_KEY
+        }
+      } : {})
     });
   }
   return client;

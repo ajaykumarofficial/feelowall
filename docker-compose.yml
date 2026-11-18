@@ -1,0 +1,119 @@
+# Local development: MongoDB, Redis, the API with auto-reload, and the Vite dev server.
+#
+#   cp backend/.env.example backend/.env      (optional: add S3, Stripe, OAuth keys)
+#   docker compose up
+#
+#   Frontend:  http://localhost:3000
+#   API:       http://localhost:5000      (health: http://localhost:5000/health)
+#
+# Source folders are mounted into the containers, so edits reload without rebuilding.
+# node_modules live in named volumes so Linux builds of native packages (sharp, rollup)
+# don't clash with the ones installed on your Windows/macOS host.
+#
+# To try the production image locally instead:  docker compose --profile prod up --build app
+
+name: aerowell
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    image: node:22-alpine
+    working_dir: /app/backend
+    command: sh -c "npm install --no-audit --no-fund && npx nodemon --legacy-watch app.js"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    # These win over backend/.env so the API talks to the containers above
+    environment:
+      NODE_ENV: development
+      PORT: "5000"
+      MONGODB_URI: mongodb://mongo:27017/aerowell
+      MONGODB_URI_TEST: mongodb://mongo:27017/aerowell_test
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-jwt-secret-change-in-production}
+      USE_REDIS: "true"
+      REDIS_URL: redis://redis:6379
+      FRONTEND_URL: http://localhost:3000
+      API_PUBLIC_URL: http://localhost:5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app/backend
+      - ./cli:/app/cli
+      - backend-node-modules:/app/backend/node_modules
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app/frontend
+    command: sh -c "npm install --no-audit --no-fund && npx vite --host 0.0.0.0 --port 3000"
+    environment:
+      VITE_API_URL: http://localhost:5000
+      # Don't try to open a browser inside the container
+      BROWSER: none
+      # File change events don't cross Windows bind mounts; poll instead
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app/frontend
+      - frontend-node-modules:/app/frontend/node_modules
+    depends_on:
+      - backend
+
+  # Production image, same as what runs on EC2. Started only with --profile prod.
+  app:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8080
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/aerowell
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-jwt-secret-change-in-production}
+      USE_REDIS: "true"
+      REDIS_URL: redis://redis:6379
+      FRONTEND_URL: http://localhost:8080
+      API_PUBLIC_URL: http://localhost:8080
+    ports:
+      - "8080:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  backend-node-modules:
+  frontend-node-modules:

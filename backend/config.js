@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 module.exports = {
-  PORT: process.env.PORT,
+  PORT: process.env.PORT || 5000,
   USE_REDIS: process.env.USE_REDIS,
   REDIS_URL: process.env.REDIS_URL,
   MONGODB_URI: process.env.MONGODB_URI,
@@ -12,6 +12,8 @@ module.exports = {
   AWS_REGION: process.env.AWS_REGION,
   AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
   AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+  // On EC2/ECS, use the attached IAM role instead of static keys
+  AWS_USE_INSTANCE_ROLE: process.env.AWS_USE_INSTANCE_ROLE === 'true',
   // Optional: serve files from a CDN/custom domain instead of the bucket URL
   S3_PUBLIC_URL: process.env.S3_PUBLIC_URL,
   // Folder inside the bucket that all uploads go under

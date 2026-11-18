@@ -1,2 +1,25 @@
 roadmap.md
 .agents/
+
+# Dependencies and build output (anywhere in the repo)
+node_modules/
+dist/
+coverage/
+*.log
+
+# Secrets: never commit these
+.env
+.env.*
+!.env.example
+!production.env.example
+*.pem
+*.key
+production.env
+
+# Runtime data
+backend/uploads/
+backend/backups/
+
+# OS / editor clutter
+.DS_Store
+Thumbs.db
