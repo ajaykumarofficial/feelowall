@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const { Wallpaper, User, DailyAnalytics, DownloadHistory, Comment, Report } = require('../../../databaseModels');
-const cloudinary = require('../../../helper/cloudinary');
+const storage = require('../../../helper/storage');
 const { trackHit } = require('../../../helper/analytics');
 const { buildWallpaperFilter, buildSort, parsePaging } = require('../../../helper/wallpaperQuery');
 const { publicFilter, canView, isPublic, isStaff, isOwner } = require('../../../helper/visibility');
@@ -91,14 +91,14 @@ const uploadWallpaper = asyncHandler(async (req, res) => {
   // Trigger background image optimization, WebP conversion, and color extraction
   const { enqueueImageProcess } = require('../../../helper/queue');
 
-  const isCloudinary = imageUrl.startsWith('http') || imageUrl.includes('res.cloudinary.com');
-  const localFilePath = isCloudinary ? '' : path.join(UPLOADS_DIR, filename);
+  const isRemote = String(imageUrl).startsWith('http');
+  const localFilePath = isRemote ? '' : path.join(UPLOADS_DIR, filename);
 
   enqueueImageProcess({
     wpId: newWallpaper._id,
     filePath: localFilePath,
     imageUrl,
-    isCloudinary,
+    isRemote,
     originalFilename: filename
   }).catch(err => console.error('Background processing enqueuing failed:', err));
 
@@ -184,14 +184,15 @@ const getMyWallpapers = asyncHandler(async (req, res) => {
 });
 
 const removeStoredFile = async (imageUrl, filename) => {
-  const isRemote = String(imageUrl).startsWith('http') || String(imageUrl).includes('res.cloudinary.com');
-  if (isRemote) {
-    if (cloudinary.isConfigured()) {
+  if (String(imageUrl).startsWith('http')) {
+    // Only delete objects that live in our own bucket.
+    const key = storage.keyFromUrl(String(imageUrl));
+    if (key) {
       try {
-        await cloudinary.deleteFromCloudinary(filename);
-      } catch (cloudErr) {
-        // Don't block DB deletion if Cloudinary fails (e.g. invalid public_id or credentials)
-        console.error('Cloudinary deletion failed:', cloudErr.message);
+        await storage.deleteFile(key);
+      } catch (storageErr) {
+        // Don't block DB deletion if S3 fails (e.g. credentials or permissions)
+        console.error('S3 deletion failed:', storageErr.message);
       }
     }
     return;

@@ -452,7 +452,7 @@ describe('Upload URL validation', () => {
     'http://169.254.169.254/latest/meta-data/',
     'http://localhost:27017/',
     'https://evil.example.com/x.jpg',
-    'https://res.cloudinary.com.evil.com/x.jpg',
+    'https://aerowell.s3.ap-southeast-2.amazonaws.com.evil.com/x.jpg',
     'file:///etc/passwd',
     '/uploads/../../.env'
   ])('refuses to accept %s as an image', async (imageUrl) => {
@@ -462,17 +462,23 @@ describe('Upload URL validation', () => {
     expect(await db.Wallpaper.countDocuments()).toBe(0);
   });
 
-  it('accepts only this project\'s own Cloudinary account', async () => {
+  it('accepts only this project\'s own S3 bucket', async () => {
     const user = await createUser('artist');
-    const original = config.CLOUDINARY_CLOUD_NAME;
-    config.CLOUDINARY_CLOUD_NAME = 'mycloud';
+    const keys = ['AWS_S3_BUCKET', 'AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'S3_PUBLIC_URL'];
+    const original = Object.fromEntries(keys.map((k) => [k, config[k]]));
+    Object.assign(config, {
+      AWS_S3_BUCKET: 'mybucket', AWS_REGION: 'ap-southeast-2', AWS_ACCESS_KEY_ID: 'id', AWS_SECRET_ACCESS_KEY: 'secret', S3_PUBLIC_URL: undefined
+    });
     // This test is about validation; the worker must not try to download from the internet.
     const queue = jest.spyOn(require('../helper/queue'), 'enqueueImageProcess').mockResolvedValue();
     try {
-      expect((await attempt(user, { imageUrl: 'https://res.cloudinary.com/othercloud/image/upload/x.jpg', filename: 'x' })).statusCode).toBe(400);
-      expect((await attempt(user, { imageUrl: 'https://res.cloudinary.com/mycloud/image/upload/x.jpg', filename: 'folder/x' })).statusCode).toBe(201);
+      const own = 'https://mybucket.s3.ap-southeast-2.amazonaws.com/feelowall/wallpapers/x.jpg';
+      expect((await attempt(user, { imageUrl: 'https://otherbucket.s3.ap-southeast-2.amazonaws.com/feelowall/x.jpg', filename: 'x' })).statusCode).toBe(400);
+      expect((await attempt(user, { imageUrl: 'https://mybucket.s3.ap-southeast-2.amazonaws.com.evil.com/x.jpg', filename: 'x' })).statusCode).toBe(400);
+      expect((await attempt(user, { imageUrl: `${own}?x=1`, filename: 'x' })).statusCode).toBe(400);
+      expect((await attempt(user, { imageUrl: own, filename: 'feelowall/wallpapers/x.jpg' })).statusCode).toBe(201);
     } finally {
-      config.CLOUDINARY_CLOUD_NAME = original;
+      Object.assign(config, original);
       queue.mockRestore();
     }
   });
@@ -511,7 +517,7 @@ describe('Duplicate detection & image analysis', () => {
     const image = await createImageFile(name, options);
     const wp = await createWallpaper(owner, { imageUrl: image.url, filename: image.filename });
     trackFile(image.filePath.replace(/\.\w+$/, '.webp'));
-    await processImageJob({ wpId: wp._id, filePath: image.filePath, imageUrl: image.url, isCloudinary: false, originalFilename: image.filename });
+    await processImageJob({ wpId: wp._id, filePath: image.filePath, imageUrl: image.url, isRemote: false, originalFilename: image.filename });
     return db.Wallpaper.findById(wp.id);
   };
 

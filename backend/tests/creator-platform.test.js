@@ -812,7 +812,7 @@ describe('AI features', () => {
       const image = await createImageFile(name, { seed });
       const wp = await createWallpaper(owner, { imageUrl: image.url, filename: image.filename });
       trackFile(path.join(UPLOADS_DIR, name.replace(/\.\w+$/, '.webp')));
-      await processImageJob({ wpId: wp._id, filePath: image.filePath, imageUrl: image.url, isCloudinary: false, originalFilename: image.filename });
+      await processImageJob({ wpId: wp._id, filePath: image.filePath, imageUrl: image.url, isRemote: false, originalFilename: image.filename });
       return db.Wallpaper.findById(wp.id);
     };
 

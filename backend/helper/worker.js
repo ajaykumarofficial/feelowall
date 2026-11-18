@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
-const cloudinary = require('./cloudinary');
+const storage = require('./storage');
 const { Wallpaper, Report } = require('../databaseModels');
 const { computeDHash, findDuplicate, describeDimensions } = require('./perceptualHash');
 const ai = require('./ai');
@@ -144,14 +144,16 @@ const analyzeImage = async (wpId, imagePath, webpBuffer) => {
 
 // Main processing worker function
 const processImageJob = async (jobData) => {
-  const { wpId, filePath, isCloudinary, originalFilename, imageUrl } = jobData;
+  const { wpId, filePath, originalFilename, imageUrl } = jobData;
+  // isCloudinary is the field name used by jobs queued before the move to S3.
+  const isRemote = Boolean(jobData.isRemote ?? jobData.isCloudinary);
   console.log(`[Worker] Started processing wallpaper ID: ${wpId}`);
 
   let activePath = filePath;
   let tempDownloadPath = '';
 
   try {
-    if (isCloudinary) {
+    if (isRemote) {
       const uploadsDir = path.join(__dirname, '../uploads');
       if (!fs.existsSync(uploadsDir)) {
         fs.mkdirSync(uploadsDir, { recursive: true });
@@ -182,27 +184,27 @@ const processImageJob = async (jobData) => {
     let finalFilename = '';
 
     // 3. Save/Upload WebP file
-    if (isCloudinary) {
+    if (isRemote) {
       const tempWebpPath = activePath + '.webp';
       fs.writeFileSync(tempWebpPath, webpBuffer);
+      if (fs.existsSync(activePath)) fs.unlinkSync(activePath);
 
-      if (cloudinary.isConfigured()) {
-        const uploadResult = await cloudinary.uploadToCloudinary(tempWebpPath);
-        finalImageUrl = uploadResult.secure_url;
-        finalFilename = uploadResult.public_id;
-        
-        // Clean up files
-        if (fs.existsSync(activePath)) fs.unlinkSync(activePath);
-        if (fs.existsSync(tempWebpPath)) fs.unlinkSync(tempWebpPath);
-        
-        // Delete original upload from Cloudinary
-        if (originalFilename) {
+      if (storage.isConfigured()) {
+        const uploadResult = await storage.uploadAndRemoveLocal(tempWebpPath, { contentType: 'image/webp' });
+        finalImageUrl = uploadResult.url;
+        finalFilename = uploadResult.key;
+
+        // Delete the original upload, but only if it is in our bucket
+        const originalKey = storage.keyFromUrl(imageUrl);
+        if (originalKey && originalKey !== uploadResult.key) {
           try {
-            await cloudinary.deleteFromCloudinary(originalFilename);
+            await storage.deleteFile(originalKey);
           } catch (delErr) {
-            console.warn(`[Worker] Failed to delete original file ${originalFilename}:`, delErr.message);
+            console.warn(`[Worker] Failed to delete original file ${originalKey}:`, delErr.message);
           }
         }
+      } else if (fs.existsSync(tempWebpPath)) {
+        fs.unlinkSync(tempWebpPath);
       }
     } else {
       const dir = path.dirname(activePath);
@@ -227,7 +229,7 @@ const processImageJob = async (jobData) => {
       {
         $set: {
           ...analysis,
-          // Without Cloudinary credentials a remote image can't be re-uploaded, so it stays where it is.
+          // Without S3 credentials a remote image can't be re-uploaded, so it stays where it is.
           ...(finalImageUrl ? { imageUrl: finalImageUrl, filename: finalFilename } : {}),
           colors: extractedColors
         }

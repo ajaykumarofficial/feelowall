@@ -5,7 +5,7 @@
  *
  *   npm run db:backup -- [output-folder]
  *
- * Uploaded image files are not included: Cloudinary or the uploads folder holds those.
+ * Uploaded image files are not included: S3 or the uploads folder holds those.
  * See docs/backup-restore.md.
  */
 const fs = require('fs');

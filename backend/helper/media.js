@@ -1,11 +1,12 @@
 const path = require('path');
 const config = require('../config');
+const storage = require('./storage');
 
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 
 /**
- * Accepts only images this app stored itself: local /uploads paths, or Cloudinary
- * URLs on this project's cloud. The worker downloads remote images from the
+ * Accepts only images this app stored itself: local /uploads paths, or URLs in
+ * this project's S3 bucket. The worker downloads remote images from the
  * server, so an open URL field would let users reach internal addresses.
  */
 const isAllowedMediaUrl = (url) => {
@@ -16,12 +17,9 @@ const isAllowedMediaUrl = (url) => {
   }
   try {
     const parsed = new URL(url);
-    return (
-      parsed.protocol === 'https:' &&
-      parsed.hostname === 'res.cloudinary.com' &&
-      !!config.CLOUDINARY_CLOUD_NAME &&
-      parsed.pathname.startsWith(`/${config.CLOUDINARY_CLOUD_NAME}/`)
-    );
+    if (parsed.protocol !== 'https:' || parsed.search || parsed.hash) return false;
+    const key = storage.keyFromUrl(url);
+    return !!key && !key.split('/').includes('..');
   } catch {
     return false;
   }
@@ -29,7 +27,7 @@ const isAllowedMediaUrl = (url) => {
 
 /**
  * Filenames are later joined to the uploads folder and deleted, so a local
- * filename must not contain a path. Cloudinary public IDs may contain "/".
+ * filename must not contain a path. S3 object keys may contain "/".
  */
 const isSafeFilename = (filename, imageUrl) => {
   if (typeof filename !== 'string' || !filename || filename.includes('..')) return false;
@@ -49,7 +47,10 @@ const localPathFor = (url) => {
 const isFetchableRemote = (url) => {
   try {
     const { protocol, hostname } = new URL(url);
-    return protocol === 'https:' && (hostname === 'res.cloudinary.com' || hostname === 'images.unsplash.com');
+    if (protocol !== 'https:') return false;
+    // res.cloudinary.com: wallpapers uploaded before the move to S3 still live there.
+    if (hostname === 'images.unsplash.com' || hostname === 'res.cloudinary.com') return true;
+    return !!storage.keyFromUrl(url);
   } catch {
     return false;
   }

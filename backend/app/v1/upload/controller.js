@@ -1,8 +1,8 @@
 const fs = require('fs');
-const cloudinary = require('../../../helper/cloudinary');
+const storage = require('../../../helper/storage');
 
 /**
- * Handle file upload, uploading to Cloudinary if configured, or fallback to local disk
+ * Handle file upload: to S3 when configured, otherwise keep it on local disk.
  */
 const uploadFile = async (req, res) => {
   try {
@@ -11,37 +11,26 @@ const uploadFile = async (req, res) => {
       return res.status(400).json({ message: 'No file uploaded.' });
     }
 
-    if (cloudinary.isConfigured() && process.env.NODE_ENV !== 'test') {
+    if (storage.isConfigured() && process.env.NODE_ENV !== 'test') {
       try {
-        const result = await cloudinary.uploadToCloudinary(file.path);
-        // Clean up temporary local file
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
+        const result = await storage.uploadAndRemoveLocal(file.path, { contentType: file.mimetype });
         return res.status(200).json({
-          message: 'File uploaded to Cloudinary successfully.',
-          url: result.secure_url,
-          publicId: result.public_id
+          message: 'File uploaded successfully.',
+          url: result.url,
+          publicId: result.key
         });
-      } catch (cloudErr) {
-        // Clean up temporary local file on failure
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
-        return res.status(500).json({
-          message: 'Cloudinary upload failed.',
-          error: cloudErr.message
-        });
+      } catch (uploadErr) {
+        console.error('S3 upload failed:', uploadErr);
+        return res.status(500).json({ message: 'Upload to storage failed. Please try again.' });
       }
-    } else {
-      // Local fallback: file was already saved to disk by multer
-      const url = `/uploads/${file.filename}`;
-      return res.status(200).json({
-        message: 'File uploaded locally successfully (Cloudinary fallback).',
-        url,
-        publicId: file.filename
-      });
     }
+
+    // Local fallback: multer already saved the file to disk
+    return res.status(200).json({
+      message: 'File uploaded successfully.',
+      url: `/uploads/${file.filename}`,
+      publicId: file.filename
+    });
   } catch (error) {
     res.status(500).json({ message: 'Upload controller error.', error: error.message });
   }

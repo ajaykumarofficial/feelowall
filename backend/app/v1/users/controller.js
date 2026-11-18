@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const cloudinary = require('../../../helper/cloudinary');
+const storage = require('../../../helper/storage');
 const {
   User, Wallpaper, Playlist, Comment, Notification, SavedSearch, AuthToken, ApiKey,
   DownloadHistory, Payment, Pack, Report, DailyAnalytics
@@ -119,21 +119,13 @@ const updateAvatar = async (req, res) => {
 
     let url = '';
 
-    if (cloudinary.isConfigured() && process.env.NODE_ENV !== 'test') {
+    if (storage.isConfigured() && process.env.NODE_ENV !== 'test') {
       try {
-        const result = await cloudinary.uploadToCloudinary(file.path);
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
-        url = result.secure_url;
-      } catch (cloudErr) {
-        if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
-        }
-        return res.status(500).json({
-          message: 'Cloudinary upload failed.',
-          error: cloudErr.message
-        });
+        const result = await storage.uploadAndRemoveLocal(file.path, { contentType: file.mimetype, folder: 'avatars' });
+        url = result.url;
+      } catch (uploadErr) {
+        console.error('S3 avatar upload failed:', uploadErr);
+        return res.status(500).json({ message: 'Upload to storage failed. Please try again.' });
       }
     } else {
       url = `/uploads/${file.filename}`;

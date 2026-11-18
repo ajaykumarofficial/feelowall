@@ -6,9 +6,16 @@ module.exports = {
   REDIS_URL: process.env.REDIS_URL,
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET,
-  CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
-  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
-  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
+
+  // Image storage on Amazon S3 (falls back to local disk when unset)
+  AWS_S3_BUCKET: process.env.AWS_S3_BUCKET,
+  AWS_REGION: process.env.AWS_REGION,
+  AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+  AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+  // Optional: serve files from a CDN/custom domain instead of the bucket URL
+  S3_PUBLIC_URL: process.env.S3_PUBLIC_URL,
+  // Folder inside the bucket that all uploads go under
+  S3_KEY_PREFIX: process.env.S3_KEY_PREFIX || 'feelowall',
 
   // Public addresses, used in emails, OAuth redirects, payment returns, and share pages
   FRONTEND_URL: (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, ''),
