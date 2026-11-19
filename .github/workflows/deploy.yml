@@ -191,7 +191,7 @@ jobs:
               commands: [
                 "set -e",
                 ("echo " + $script + " | base64 -d > /tmp/aerowell-deploy.sh"),
-                ("bash /tmp/aerowell-deploy.sh '" + $image + "' '" + $region + "' '" + $param + "'")
+                ("bash /tmp/aerowell-deploy.sh " + ([$image, $region, $param] | @sh))
               ],
               executionTimeout: ["900"]
             }')"

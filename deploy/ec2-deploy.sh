@@ -27,13 +27,37 @@ REGISTRY="${IMAGE_URI%%/*}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 
+# Package installs must never stop to ask questions (there's no terminal under SSM)
+export DEBIAN_FRONTEND=noninteractive
+
+# ---------- AWS CLI (preinstalled on Amazon Linux, not on Ubuntu) ----------
+if ! command -v aws >/dev/null 2>&1; then
+  log "AWS CLI not found, installing v2"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y -qq && apt-get install -y -qq unzip curl >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q unzip curl
+  fi
+  case "$(uname -m)" in
+    aarch64|arm64) CLI_ARCH=aarch64 ;;
+    *)             CLI_ARCH=x86_64 ;;
+  esac
+  TMP_CLI="$(mktemp -d)"
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${CLI_ARCH}.zip" -o "${TMP_CLI}/awscliv2.zip"
+  unzip -q "${TMP_CLI}/awscliv2.zip" -d "${TMP_CLI}"
+  "${TMP_CLI}/aws/install" --update
+  rm -rf "${TMP_CLI}"
+  hash -r
+  aws --version
+fi
+
 # ---------- Docker ----------
 if ! command -v docker >/dev/null 2>&1; then
   log "Docker not found, installing"
   if command -v dnf >/dev/null 2>&1; then
     dnf install -y docker
   elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update -y && apt-get install -y docker.io
+    apt-get update -y -qq && apt-get install -y -qq docker.io curl >/dev/null
   else
     log "No supported package manager to install Docker"; exit 1
   fi
