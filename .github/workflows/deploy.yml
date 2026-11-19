@@ -30,7 +30,7 @@ env:
   ECR_REPOSITORY: aerowell
   # Every running EC2 instance with this tag receives the deploy
   EC2_TAG_KEY: App
-  EC2_TAG_VALUE: aerowell
+  EC2_TAG_VALUE: feelowall-server
   # SecureString parameter holding the production .env file contents
   ENV_PARAMETER: /aerowell/production/env
 
