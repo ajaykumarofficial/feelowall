@@ -30,6 +30,7 @@ const { getUseRedis } = require('./helper/queue');
 const { isStripeConfigured } = require('./helper/stripe');
 const { isAiConfigured } = require('./helper/ai');
 const { reportError, redact } = require('./helper/logger');
+const { createHealthHandler } = require('./helper/health');
 
 const app = express();
 const PORT = config.PORT;
@@ -65,6 +66,13 @@ app.get('/health', (req, res) => {
     uptimeSeconds: Math.round(process.uptime())
   });
 });
+
+/**
+ * For the external uptime monitor (DevPulse). Checks MongoDB, plus Redis and S3 when configured.
+ * Registered before the rate limiter and every auth router so the monitor always reaches it.
+ * Express answers HEAD from this GET route with the same status and no body.
+ */
+app.get('/api/health', createHealthHandler());
 
 app.use('/uploads', express.static(uploadsDir, {
   maxAge: '1y',

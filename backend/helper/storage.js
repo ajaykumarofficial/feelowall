@@ -116,6 +116,7 @@ const uploadAndRemoveLocal = async (localPath, options) => {
 
 module.exports = {
   isConfigured,
+  getClient,
   uploadFile,
   uploadAndRemoveLocal,
   deleteFile,
